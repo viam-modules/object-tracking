@@ -65,9 +65,9 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 
 // Config contains two component (motor) names.
 type Config struct {
-	CameraName   string   `json:"camera_name"`
-	DetectorName string   `json:"detector_name"`
-	ChosenLabels []string `json:"chosen_labels"`
+	CameraName   string             `json:"camera_name"`
+	DetectorName string             `json:"detector_name"`
+	ChosenLabels map[string]float64 `json:"chosen_labels"`
 }
 
 // Validate validates the config and returns implicit dependencies,
@@ -82,17 +82,18 @@ func (cfg *Config) Validate(path string) ([]string, error) {
 		return nil, fmt.Errorf(`expected "detector_name" attribute for object tracker %q`, path)
 	}
 
-	// Return the left and right motor names so that `newBase` can access them as dependencies.
+	// Return the resource names so that newTracker can access them as dependencies.
 	return []string{cfg.CameraName, cfg.DetectorName}, nil
 }
 
 type myTracker struct {
 	resource.Named
-	logger     logging.Logger
-	cam        camera.Camera
-	camStream  gostream.VideoStream
-	detector   vision.Service
-	detections [5][]objdet.Detection
+	logger       logging.Logger
+	cam          camera.Camera
+	camStream    gostream.VideoStream
+	detector     vision.Service
+	detections   [5][]objdet.Detection
+	chosenLabels map[string]float64
 }
 
 // Reconfigure reconfigures with new settings.
@@ -106,6 +107,8 @@ func (t *myTracker) Reconfigure(ctx context.Context, deps resource.Dependencies,
 	if err != nil {
 		return errors.Errorf("Could not assert proper config for %s", ModelName)
 	}
+
+	t.chosenLabels = trackerConfig.ChosenLabels // needs some validation but yeah.
 
 	t.cam, err = camera.FromDependencies(deps, trackerConfig.CameraName)
 	if err != nil {
@@ -125,10 +128,8 @@ func (t *myTracker) DetectionsFromCamera(
 	extra map[string]interface{},
 ) ([]objdet.Detection, error) {
 
-	// var detList [][]objdet.Detection
-
-	// Need to check cameraName against config but for now...
-
+	// What's crazy is the transfrom camera actually uses Detections not DetsFromCam
+	// Need to check cameraName against config and then call Detections but for now...
 	return t.detections[3], nil
 
 }
@@ -136,10 +137,14 @@ func (t *myTracker) DetectionsFromCamera(
 func (t *myTracker) Detections(ctx context.Context, img image.Image, extra map[string]interface{},
 ) ([]objdet.Detection, error) {
 
-	// Ignore img. Use the detections from the t.detections directly
+	detections, err := t.detector.Detections(ctx, img, nil)
+	if err != nil {
+		return nil, err
+	}
+	outDets := NewAdvancedFilter(t.chosenLabels)(detections)
 
 	// Just return the underlying detections
-	return t.detector.Detections(ctx, img, extra)
+	return outDets, nil
 
 }
 
