@@ -1,9 +1,10 @@
-// Package object_tracker does the object tracking or whateva
+// Package object_tracker implements an object tracker as a Viam vision service
 package object_tracker
 
 import (
 	"context"
 	"fmt"
+	hg "github.com/charles-haynes/munkres"
 	"github.com/pkg/errors"
 	"go.viam.com/rdk/components/camera"
 	"go.viam.com/rdk/gostream"
@@ -42,13 +43,14 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 		return nil, err
 	}
 
-	// Populate the first set of 5 detections with images from camera
+	// Populate the first set of 2 detections to start us off
 	stream, err := t.cam.Stream(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	t.camStream = stream
-	for i := 0; i < 5; i++ {
+
+	for i := 0; i < 2; i++ {
 		img, _, err := t.camStream.Next(ctx)
 		if err != nil {
 			return nil, err
@@ -57,9 +59,8 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 		if err != nil {
 			return nil, err
 		}
-		t.detections[i] = detections
+		t.oldDetections[i] = detections
 	}
-
 	return t, nil
 }
 
@@ -88,12 +89,12 @@ func (cfg *Config) Validate(path string) ([]string, error) {
 
 type myTracker struct {
 	resource.Named
-	logger       logging.Logger
-	cam          camera.Camera
-	camStream    gostream.VideoStream
-	detector     vision.Service
-	detections   [5][]objdet.Detection
-	chosenLabels map[string]float64
+	logger        logging.Logger
+	cam           camera.Camera
+	camStream     gostream.VideoStream
+	detector      vision.Service
+	oldDetections [2][]objdet.Detection
+	chosenLabels  map[string]float64
 }
 
 // Reconfigure reconfigures with new settings.
@@ -130,21 +131,43 @@ func (t *myTracker) DetectionsFromCamera(
 
 	// What's crazy is the transfrom camera actually uses Detections not DetsFromCam
 	// Need to check cameraName against config and then call Detections but for now...
-	return t.detections[3], nil
+	return t.oldDetections[0], nil
 
 }
 
 func (t *myTracker) Detections(ctx context.Context, img image.Image, extra map[string]interface{},
 ) ([]objdet.Detection, error) {
 
+	// Start by grabbing the old detections. Filter them and compare them to new shits
+	filteredOld := NewAdvancedFilter(t.chosenLabels)(t.oldDetections[1])
+	filteredOld = objdet.NewScoreFilter(0.2)(filteredOld)
+
+	// Take fresh detections
 	detections, err := t.detector.Detections(ctx, img, nil)
 	if err != nil {
 		return nil, err
 	}
-	outDets := NewAdvancedFilter(t.chosenLabels)(detections)
+	filteredNew := NewAdvancedFilter(t.chosenLabels)(detections)
+	filteredNew = objdet.NewScoreFilter(0.2)(filteredNew)
+
+	// Build and solve cost matrix via Munkres' method
+	matchMtx := BuildMatchingMatrix(filteredOld, filteredNew)
+	HA, err := hg.NewHungarianAlgorithm(matchMtx)
+	if err != nil {
+		return nil, err
+	}
+	out := HA.Execute()
+	fmt.Printf("We got.... %v\n", out)
+
+	// Label magic goes here.
+
+	// Then we need to update. The new is now the old yada yada
+	// Add Kalman filter stuff here when we start caring.
+	t.oldDetections[0] = t.oldDetections[1]
+	t.oldDetections[1] = detections
 
 	// Just return the underlying detections
-	return outDets, nil
+	return filteredNew, nil
 
 }
 
