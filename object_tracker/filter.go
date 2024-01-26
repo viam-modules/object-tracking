@@ -16,10 +16,10 @@ func NewAdvancedFilter(chosenLabels map[string]float64) objdet.Postprocessor {
 		if len(chosenLabels) < 1 {
 			return detections
 		}
-
 		out := make([]objdet.Detection, 0, len(detections))
 		for _, d := range detections {
-			minConf, ok := chosenLabels[strings.ToLower(d.Label())]
+			baseLabel := strings.ToLower(strings.Split(d.Label(), "_")[0])
+			minConf, ok := chosenLabels[baseLabel]
 			if ok {
 				if d.Score() > minConf {
 					out = append(out, d)
@@ -28,4 +28,9 @@ func NewAdvancedFilter(chosenLabels map[string]float64) objdet.Postprocessor {
 		}
 		return out
 	}
+}
+
+func FilterDetections(chosenLabels map[string]float64, dets []objdet.Detection) []objdet.Detection {
+	firstPass := NewAdvancedFilter(chosenLabels)(dets)
+	return objdet.NewScoreFilter(MinConfidence)(firstPass)
 }
