@@ -1,4 +1,4 @@
-// Package object_tracker does the object tracking or whateva
+// Package object_tracker implements an object tracker as a Viam vision service
 package object_tracker
 
 import (
