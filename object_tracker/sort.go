@@ -34,6 +34,7 @@ func PredictNextFrame(old, curr image.Rectangle) image.Rectangle {
 
 // BuildMatchingMatrix sets up a cost matrix for the Hungarian algorithm
 // In this implementation, cost is -IOU between bboxes (b/c solver will find min)
+// May need to edit to do the actual predictions before comparing to newDets
 func BuildMatchingMatrix(oldDetections, newDetections []objdet.Detection) [][]float64 {
 	h, w := len(oldDetections), len(newDetections)
 	matchMtx := make([][]float64, h)

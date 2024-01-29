@@ -181,6 +181,7 @@ func (t *myTracker) Detections(ctx context.Context, img image.Image, extra map[s
 	filteredNew := FilterDetections(t.chosenLabels, detections)
 
 	// Build and solve cost matrix via Munkres' method
+	// TODO??: Edit BMM to add the PredictNextFrame.
 	matchMtx := BuildMatchingMatrix(namedOld, filteredNew)
 	HA, err := hg.NewHungarianAlgorithm(matchMtx)
 	if err != nil {
