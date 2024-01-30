@@ -1,4 +1,7 @@
-// Package object_tracker implements an object tracker as a Viam vision service
+// Package object_tracker implements an object tracker as a Viam vision service.
+// This file contains methods that handle the label (or name) of a detection
+// If two detections are output with the same label, they are considered the same object
+// Labels are of the format classname_N_YYYYMMDD_HHMM
 package object_tracker
 
 import (
@@ -9,10 +12,10 @@ import (
 	"time"
 )
 
-// GetTimestamp will retrieve and format a timestamp to be YYYYMMDD_HHMM
+// GetTimestamp will retrieve and format a timestamp to be YYYYMMDD_HHMMSS
 func GetTimestamp() string {
 	currTime := time.Now()
-	return fmt.Sprintf(currTime.Format("20060201_1504"))
+	return fmt.Sprintf(currTime.Format("20060102_150405"))
 }
 
 // ReplaceLabel replaces the detection with an almost identical detection (new label)
@@ -29,15 +32,15 @@ func (t *myTracker) RenameFromMatches(matches []int, oldDets, newDets []objdet.D
 	for i, _ := range newDets {
 		notUsed[i] = struct{}{}
 	}
-	fmt.Printf("THE MATCHES HERE ---> %v\n", matches)
-	fmt.Printf("The len of newDets--> %v\n", len(newDets))
-
+	// Go through valid matches and update name and track
 	for oldIdx, newIdx := range matches {
 		if newIdx != -1 {
 			newDets[newIdx] = ReplaceLabel(newDets[newIdx], oldDets[oldIdx].Label())
+			t.UpdateTrack(newDets[newIdx])
 			delete(notUsed, newIdx)
 		}
 	}
+	// Go through all NEW things and add them in (name them and start new track)
 	if len(newDets) > len(matches) {
 		for idx := range notUsed {
 			newDets[idx] = t.RenameFirstTime(newDets[idx])
@@ -47,7 +50,7 @@ func (t *myTracker) RenameFromMatches(matches []int, oldDets, newDets []objdet.D
 }
 
 // RenameFirstTime should activate whenever a new object appears.
-// It will start or update a class counter for whichever class.
+// It will start or update a class counter for whichever class and create a new track.
 func (t *myTracker) RenameFirstTime(det objdet.Detection) objdet.Detection {
 	baseLabel := strings.ToLower(strings.Split(det.Label(), "_")[0])
 	classCount, ok := t.classCounter[baseLabel]
@@ -56,6 +59,17 @@ func (t *myTracker) RenameFirstTime(det objdet.Detection) objdet.Detection {
 	} else {
 		t.classCounter[baseLabel] = classCount + 1
 	}
-	label := baseLabel + "_" + strconv.Itoa(t.classCounter[baseLabel]) + "_" + GetTimestamp()
-	return objdet.NewDetection(*det.BoundingBox(), det.Score(), label)
+	countLabel := baseLabel + "_" + strconv.Itoa(t.classCounter[baseLabel])
+	label := countLabel + "_" + GetTimestamp()
+	out := objdet.NewDetection(*det.BoundingBox(), det.Score(), label)
+	t.tracks[countLabel] = []objdet.Detection{out} // Start new track with this one
+	return out
+}
+
+func (t *myTracker) UpdateTrack(det objdet.Detection) {
+	countLabel := strings.Join(strings.Split(det.Label(), "_")[0:2], "_")
+	track, ok := t.tracks[countLabel]
+	if ok {
+		t.tracks[countLabel] = append(track, det)
+	}
 }

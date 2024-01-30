@@ -1,4 +1,5 @@
 // Package object_tracker implements an object tracker as a Viam vision service
+// This file contains methods that are useful for filtering out detections.
 package object_tracker
 
 import (

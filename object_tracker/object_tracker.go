@@ -4,11 +4,11 @@ package object_tracker
 import (
 	"context"
 	"fmt"
+	"time"
 
 	hg "github.com/charles-haynes/munkres"
 	"github.com/pkg/errors"
 	"go.viam.com/rdk/components/camera"
-	"go.viam.com/rdk/gostream"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/resource"
 	"go.viam.com/rdk/services/vision"
@@ -20,12 +20,12 @@ import (
 
 // ModelName is the name of the model
 const (
-	ModelName     = "object-tracker"
-	MinConfidence = 0.2
+	ModelName           = "object-tracker"
+	MinConfidence       = 0.2
+	DefaultMaxFrequency = 10
 )
 
-// Here is where we define your new model's colon-delimited-triplet (acme:demo:mybase)
-// acme = namespace, demo = repo-name, mybase = model name.
+// Here is where we define your new model's colon-delimited-triplet (viam:vision:object-tracker)
 var (
 	Model            = resource.NewModel("viam", "vision", ModelName)
 	errUnimplemented = errors.New("unimplemented")
@@ -42,11 +42,16 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 		Named:        conf.ResourceName().AsNamed(),
 		logger:       logger,
 		classCounter: make(map[string]int),
+		tracks:       make(map[string][]objdet.Detection),
 	}
-	// This will set the t.cam, t.detector, and t.chosenLabels
-	// and the t.frequency when I add it lol
+
 	if err := t.Reconfigure(ctx, deps, conf); err != nil {
 		return nil, err
+	}
+
+	// Default value for frequency = 10Hz
+	if t.frequency == 0 {
+		t.frequency = DefaultMaxFrequency
 	}
 
 	// Populate the first set of 2 detections to start us off
@@ -54,9 +59,8 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 	if err != nil {
 		return nil, err
 	}
-	t.camStream = stream
 	for i := 0; i < 2; i++ {
-		img, _, err := t.camStream.Next(ctx)
+		img, _, err := stream.Next(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -80,15 +84,14 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 	}
 
 	// Build and solve cost matrix via Munkres' method
-	matchMtx := BuildMatchingMatrix(renamedOld, filteredNew)
+	matchMtx := t.BuildMatchingMatrix(renamedOld, filteredNew)
 	HA, err := hg.NewHungarianAlgorithm(matchMtx)
 	if err != nil {
 		return nil, err
 	}
-	// matches come out as a []int where the idx is the oldIdx and value is newIdx
-	// -1 means something disappeared
 	matches := HA.Execute()
 
+	// Rename from temporal matches. New det copies old det's label
 	renamedNew := t.RenameFromMatches(matches, renamedOld, filteredNew)
 	t.oldDetections[0] = renamedOld
 	t.oldDetections[1] = renamedNew
@@ -96,15 +99,16 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 	return t, nil
 }
 
-// Config contains two component (motor) names.
+// Config contains names for necessary resources (camera and vision service)
 type Config struct {
 	CameraName   string             `json:"camera_name"`
 	DetectorName string             `json:"detector_name"`
 	ChosenLabels map[string]float64 `json:"chosen_labels"`
+	MaxFrequency float64            `json:"max_frequency_hz"`
 }
 
 // Validate validates the config and returns implicit dependencies,
-// this Validate checks if the left and right motors exist for the module's base model.
+// this Validate checks if the camera and detector exist for the module's base model.
 func (cfg *Config) Validate(path string) ([]string, error) {
 	// check if the attribute fields for the right and left motors are non-empty
 	// this makes them required for the model to successfully build
@@ -123,11 +127,13 @@ type myTracker struct {
 	resource.Named
 	logger        logging.Logger
 	cam           camera.Camera
-	camStream     gostream.VideoStream
+	camName       string
 	detector      vision.Service
 	oldDetections [2][]objdet.Detection
+	frequency     float64
 	chosenLabels  map[string]float64
 	classCounter  map[string]int
+	tracks        map[string][]objdet.Detection
 }
 
 // Reconfigure reconfigures with new settings.
@@ -142,13 +148,18 @@ func (t *myTracker) Reconfigure(ctx context.Context, deps resource.Dependencies,
 		return errors.Errorf("Could not assert proper config for %s", ModelName)
 	}
 
-	t.chosenLabels = trackerConfig.ChosenLabels // needs some validation but yeah.
+	if trackerConfig.MaxFrequency < 0 {
+		// if 0, will be set to default later
+		return errors.New("frequency(Hz) must be a positive number")
+	}
+	t.frequency = trackerConfig.MaxFrequency
 
+	t.chosenLabels = trackerConfig.ChosenLabels // needs some validation but yeah.
+	t.camName = trackerConfig.CameraName
 	t.cam, err = camera.FromDependencies(deps, trackerConfig.CameraName)
 	if err != nil {
 		return errors.Wrapf(err, "unable to get camera %v for object tracker", trackerConfig.CameraName)
 	}
-
 	t.detector, err = vision.FromDependencies(deps, trackerConfig.DetectorName)
 	if err != nil {
 		return errors.Wrapf(err, "unable to get camera %v for object tracker", trackerConfig.DetectorName)
@@ -162,15 +173,26 @@ func (t *myTracker) DetectionsFromCamera(
 	extra map[string]interface{},
 ) ([]objdet.Detection, error) {
 
-	// What's crazy is the transfrom camera actually uses Detections not DetsFromCam
-	// Need to check cameraName against config and then call Detections but for now...
-	return t.oldDetections[0], nil
+	if cameraName != t.camName {
+		return nil, errors.Errorf("Camera name given to method, %v is not the same as configured camera %v", cameraName, t.camName)
+	}
+	stream, err := t.cam.Stream(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	img, _, err := stream.Next(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return t.Detections(ctx, img, nil)
 
 }
 
 func (t *myTracker) Detections(ctx context.Context, img image.Image, extra map[string]interface{}) ([]objdet.Detection, error) {
+	start := time.Now()
 
-	// Start by grabbing the old detections. They're filtered and renamed so compare them to new shits
+	// Start by grabbing the old detections. They're filtered and renamed already.
 	namedOld := t.oldDetections[1]
 
 	// Take fresh detections
@@ -181,21 +203,27 @@ func (t *myTracker) Detections(ctx context.Context, img image.Image, extra map[s
 	filteredNew := FilterDetections(t.chosenLabels, detections)
 
 	// Build and solve cost matrix via Munkres' method
-	// TODO??: Edit BMM to add the PredictNextFrame.
-	matchMtx := BuildMatchingMatrix(namedOld, filteredNew)
+	matchMtx := t.BuildMatchingMatrix(namedOld, filteredNew)
 	HA, err := hg.NewHungarianAlgorithm(matchMtx)
 	if err != nil {
 		return nil, err
 	}
 	out := HA.Execute()
 
-	// Label magic goes here.
+	// Rename new detections the same as old temporal matches
 	renamedNew := t.RenameFromMatches(out, namedOld, filteredNew)
 
 	// Then we need to update. The new is now the old yada yada
-	// Add Kalman filter stuff here when we start caring.
+	// Add Kalman filter stuff here eventually
 	t.oldDetections[0] = namedOld
 	t.oldDetections[1] = renamedNew
+
+	done := time.Now()
+	took := done.Sub(start)
+	waitFor := time.Duration((1/t.frequency)*float64(time.Second)) - took
+	if waitFor > time.Microsecond {
+		time.Sleep(waitFor)
+	}
 
 	// Just return the underlying detections
 	return renamedNew, nil
@@ -224,7 +252,6 @@ func (t *myTracker) GetObjectPointClouds(
 	return nil, errUnimplemented
 }
 
-// Close stops motion during shutdown.
 func (t *myTracker) Close(ctx context.Context) error {
 	return nil
 }
