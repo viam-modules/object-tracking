@@ -134,12 +134,15 @@ type myTracker struct {
 	chosenLabels  map[string]float64
 	classCounter  map[string]int
 	tracks        map[string][]objdet.Detection
+	timeStats     []time.Duration
 }
 
 // Reconfigure reconfigures with new settings.
 func (t *myTracker) Reconfigure(ctx context.Context, deps resource.Dependencies, conf resource.Config) error {
+	var timeList []time.Duration
 	t.cam = nil
 	t.detector = nil
+	t.timeStats = timeList
 
 	// This takes the generic resource.Config passed down from the parent and converts it to the
 	// model-specific (aka "native") Config structure defined, above making it easier to directly access attributes.
@@ -220,6 +223,8 @@ func (t *myTracker) Detections(ctx context.Context, img image.Image, extra map[s
 
 	done := time.Now()
 	took := done.Sub(start)
+	t.timeStats = append(t.timeStats, took)
+
 	waitFor := time.Duration((1/t.frequency)*float64(time.Second)) - took
 	if waitFor > time.Microsecond {
 		time.Sleep(waitFor)
@@ -258,5 +263,24 @@ func (t *myTracker) Close(ctx context.Context) error {
 
 // DoCommand simply echos whatever was sent.
 func (t *myTracker) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
-	return cmd, nil
+	// average, fastest, and slowest time (and n)
+	tmin, tmax := 10*time.Second, 10*time.Nanosecond
+	n := int64(len(t.timeStats))
+	var sum time.Duration
+	for _, tt := range t.timeStats {
+		if tt < tmin {
+			tmin = tt
+		}
+		if tt > tmax {
+			tmax = tt
+		}
+		sum += tt
+	}
+	mean := time.Duration(int64(sum) / n)
+	out := map[string]interface{}{
+		"slowest": fmt.Sprintf("%s", tmax),
+		"fastest": fmt.Sprintf("%s", tmin),
+		"average": fmt.Sprintf("%s", mean),
+	}
+	return out, nil
 }
