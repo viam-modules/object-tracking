@@ -108,7 +108,7 @@ type Config struct {
 }
 
 // Validate validates the config and returns implicit dependencies,
-// this Validate checks if the camera and detector exist for the module's base model.
+// this Validate checks if the camera and detector(vision svc) exist for the module's vision model.
 func (cfg *Config) Validate(path string) ([]string, error) {
 	// check if the attribute fields for the right and left motors are non-empty
 	// this makes them required for the model to successfully build
@@ -154,7 +154,7 @@ func (t *myTracker) Reconfigure(ctx context.Context, deps resource.Dependencies,
 	}
 	t.frequency = trackerConfig.MaxFrequency
 
-	t.chosenLabels = trackerConfig.ChosenLabels // needs some validation but yeah.
+	t.chosenLabels = trackerConfig.ChosenLabels
 	t.camName = trackerConfig.CameraName
 	t.cam, err = camera.FromDependencies(deps, trackerConfig.CameraName)
 	if err != nil {
