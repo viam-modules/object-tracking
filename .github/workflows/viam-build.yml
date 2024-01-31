@@ -1,6 +1,6 @@
 # see https://github.com/viamrobotics/build-action for help
 on:
- workflow_dispatch:
+  workflow_dispatch:
     inputs:
       version:
         type: string

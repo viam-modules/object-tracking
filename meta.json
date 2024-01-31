@@ -1,0 +1,17 @@
+{
+  "module_id": "viam:object-tracker",
+  "visibility": "public",
+  "url": "https://github.com/viam-labs/object-tracking",
+  "description": "A module of the Viam vision service that implements object tracking ",
+  "models": [
+    {
+      "api": "rdk:service:vision",
+      "model": "viam:vision:object-tracker"
+    }
+  ],
+  "build": {
+    "build": "make module.tar.gz",
+    "arch" : ["linux/amd64", "linux/arm64", "darwin/amd64", "darwin/arm64"]
+  },
+  "entrypoint": "object-tracker"
+}
