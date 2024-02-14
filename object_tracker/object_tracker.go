@@ -4,6 +4,7 @@ package object_tracker
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	hg "github.com/charles-haynes/munkres"
@@ -48,17 +49,19 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 	if err := t.Reconfigure(ctx, deps, conf); err != nil {
 		return nil, err
 	}
-
 	// Default value for frequency = 10Hz
 	if t.frequency == 0 {
 		t.frequency = DefaultMaxFrequency
 	}
 
-	// Populate the first set of 2 detections to start us off
+	// Do the first pass to populate the first set of 2 detections and start us off.
+	// Get the full first pass match before throwing them in
+	starterDets := make([][]objdet.Detection, 2)
 	stream, err := t.cam.Stream(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
+	defer stream.Close(ctx)
 	for i := 0; i < 2; i++ {
 		img, _, err := stream.Next(ctx)
 		if err != nil {
@@ -68,11 +71,12 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 		if err != nil {
 			return nil, err
 		}
-		t.oldDetections[i] = detections
+		starterDets[i] = detections
 	}
 
-	filteredOld := FilterDetections(t.chosenLabels, t.oldDetections[0])
-	filteredNew := FilterDetections(t.chosenLabels, t.oldDetections[1])
+	// Filter
+	filteredOld := FilterDetections(t.chosenLabels, starterDets[0])
+	filteredNew := FilterDetections(t.chosenLabels, starterDets[1])
 
 	// Rename from scratch
 	// The strategy is to rename the (n-1) detections and then match the (n) dets to those
@@ -82,7 +86,6 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 		newDet := t.RenameFirstTime(det)
 		renamedOld = append(renamedOld, newDet)
 	}
-
 	// Build and solve cost matrix via Munkres' method
 	matchMtx := t.BuildMatchingMatrix(renamedOld, filteredNew)
 	HA, err := hg.NewHungarianAlgorithm(matchMtx)
@@ -90,11 +93,71 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 		return nil, err
 	}
 	matches := HA.Execute()
-
 	// Rename from temporal matches. New det copies old det's label
 	renamedNew := t.RenameFromMatches(matches, renamedOld, filteredNew)
-	t.oldDetections[0] = renamedOld
-	t.oldDetections[1] = renamedNew
+	// Don't actually need a mutex this time b/c nothing else should be accessing yet
+	t.oldDetections = [2][]objdet.Detection{renamedOld, renamedNew}
+	fmt.Printf("THE OLD DETS: %v\n", t.oldDetections)
+
+	fmt.Println("Starting goroutine!")
+
+	go func() error {
+		for {
+			start := time.Now()
+			// Load up the old detections
+			t.detMux.Lock()
+			namedOld := t.oldDetections[1]
+			t.detMux.Unlock()
+
+			// Take fresh detections from fresh image
+			img, _, err := stream.Next(ctx)
+			if err != nil {
+				return err
+			}
+			detections, err := t.detector.Detections(ctx, img, nil)
+			if err != nil {
+				return err
+			}
+			filteredNew := FilterDetections(t.chosenLabels, detections)
+
+			// Build and solve cost matrix via Munkres' method
+			matchMtx := t.BuildMatchingMatrix(namedOld, filteredNew)
+			HA, err := hg.NewHungarianAlgorithm(matchMtx)
+			if err != nil {
+				return err
+			}
+			matches := HA.Execute()
+
+			// Rename from temporal matches. New det copies old det's label
+			renamedNew := t.RenameFromMatches(matches, namedOld, filteredNew)
+
+			// Store the matched detections
+			t.detMux.Lock()
+			//t.oldDetections = [2][]objdet.Detection{namedOld, renamedNew}
+			t.oldDetections = [2][]objdet.Detection{namedOld, renamedNew}
+
+			t.detMux.Unlock()
+
+			done := time.Now()
+			took := done.Sub(start)
+
+			t.timeStats = append(t.timeStats, took)
+			fmt.Printf("This took: %v\n", took)
+			fmt.Printf("And got: %v\n", t.oldDetections[1])
+
+			waitFor := time.Duration((1/t.frequency)*float64(time.Second)) - took
+			if waitFor > time.Microsecond {
+				time.Sleep(waitFor)
+			}
+
+		}
+		return nil
+	}()
+	//time.Sleep(5 * time.Second)
+	//fmt.Println(t.oldDetections)
+	//
+	for {
+	}
 
 	return t, nil
 }
@@ -125,16 +188,20 @@ func (cfg *Config) Validate(path string) ([]string, error) {
 
 type myTracker struct {
 	resource.Named
-	logger        logging.Logger
-	cam           camera.Camera
-	camName       string
-	detector      vision.Service
+	logger logging.Logger
+
+	detMux        sync.Mutex
 	oldDetections [2][]objdet.Detection
-	frequency     float64
-	chosenLabels  map[string]float64
-	classCounter  map[string]int
-	tracks        map[string][]objdet.Detection
-	timeStats     []time.Duration
+	detChan       chan [2][]objdet.Detection
+
+	cam          camera.Camera
+	camName      string
+	detector     vision.Service
+	frequency    float64
+	chosenLabels map[string]float64
+	classCounter map[string]int
+	tracks       map[string][]objdet.Detection
+	timeStats    []time.Duration
 }
 
 // Reconfigure reconfigures with new settings.
@@ -175,63 +242,25 @@ func (t *myTracker) DetectionsFromCamera(
 	cameraName string,
 	extra map[string]interface{},
 ) ([]objdet.Detection, error) {
-
 	if cameraName != t.camName {
 		return nil, errors.Errorf("Camera name given to method, %v is not the same as configured camera %v", cameraName, t.camName)
 	}
-	stream, err := t.cam.Stream(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	img, _, err := stream.Next(ctx)
-	if err != nil {
-		return nil, err
-	}
 
-	return t.Detections(ctx, img, nil)
+	t.detMux.Lock()
+	defer t.detMux.Unlock()
+	out := t.oldDetections
+	fmt.Println(out)
+	return out[1], nil
 
 }
 
 func (t *myTracker) Detections(ctx context.Context, img image.Image, extra map[string]interface{}) ([]objdet.Detection, error) {
-	start := time.Now()
-
-	// Start by grabbing the old detections. They're filtered and renamed already.
-	namedOld := t.oldDetections[1]
-
-	// Take fresh detections
-	detections, err := t.detector.Detections(ctx, img, nil)
-	if err != nil {
-		return nil, err
-	}
-	filteredNew := FilterDetections(t.chosenLabels, detections)
-
-	// Build and solve cost matrix via Munkres' method
-	matchMtx := t.BuildMatchingMatrix(namedOld, filteredNew)
-	HA, err := hg.NewHungarianAlgorithm(matchMtx)
-	if err != nil {
-		return nil, err
-	}
-	out := HA.Execute()
-
-	// Rename new detections the same as old temporal matches
-	renamedNew := t.RenameFromMatches(out, namedOld, filteredNew)
-
-	// Then we need to update. The new is now the old yada yada
-	// Add Kalman filter stuff here eventually
-	t.oldDetections[0] = namedOld
-	t.oldDetections[1] = renamedNew
-
-	done := time.Now()
-	took := done.Sub(start)
-	t.timeStats = append(t.timeStats, took)
-
-	waitFor := time.Duration((1/t.frequency)*float64(time.Second)) - took
-	if waitFor > time.Microsecond {
-		time.Sleep(waitFor)
-	}
-
-	// Just return the underlying detections
-	return renamedNew, nil
+	
+	t.detMux.Lock()
+	defer t.detMux.Unlock()
+	out := t.oldDetections
+	fmt.Println(out)
+	return out[1], nil
 }
 
 func (t *myTracker) ClassificationsFromCamera(
