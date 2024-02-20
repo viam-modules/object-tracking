@@ -4,7 +4,9 @@ package object_tracker
 import (
 	"context"
 	"fmt"
+	"go.viam.com/rdk/gostream"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	hg "github.com/charles-haynes/munkres"
@@ -16,6 +18,7 @@ import (
 	vis "go.viam.com/rdk/vision"
 	"go.viam.com/rdk/vision/classification"
 	objdet "go.viam.com/rdk/vision/objectdetection"
+	viamutils "go.viam.com/utils"
 	"image"
 )
 
@@ -38,6 +41,24 @@ func init() {
 	})
 }
 
+type myTracker struct {
+	resource.Named
+	logger                  logging.Logger
+	cancelFunc              context.CancelFunc
+	cancelContext           context.Context
+	activeBackgroundWorkers sync.WaitGroup
+	oldDetections           atomic.Pointer[[2][]objdet.Detection]
+
+	cam          camera.Camera
+	camName      string
+	detector     vision.Service
+	frequency    float64
+	chosenLabels map[string]float64
+	classCounter map[string]int
+	tracks       map[string][]objdet.Detection
+	timeStats    []time.Duration
+}
+
 func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.Config, logger logging.Logger) (vision.Service, error) {
 	t := &myTracker{
 		Named:        conf.ResourceName().AsNamed(),
@@ -54,33 +75,32 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 		t.frequency = DefaultMaxFrequency
 	}
 
+	cancelableCtx, cancel := context.WithCancel(context.Background())
+	t.cancelFunc = cancel
+	t.cancelContext = cancelableCtx
+
 	// Do the first pass to populate the first set of 2 detections and start us off.
 	// Get the full first pass match before throwing them in
 	starterDets := make([][]objdet.Detection, 2)
-	stream, err := t.cam.Stream(ctx, nil)
+	stream, err := t.cam.Stream(t.cancelContext, nil)
 	if err != nil {
 		return nil, err
 	}
-	defer stream.Close(ctx)
 	for i := 0; i < 2; i++ {
-		img, _, err := stream.Next(ctx)
+		img, _, err := stream.Next(t.cancelContext)
 		if err != nil {
 			return nil, err
 		}
-		detections, err := t.detector.Detections(ctx, img, nil)
+		detections, err := t.detector.Detections(t.cancelContext, img, nil)
 		if err != nil {
 			return nil, err
 		}
 		starterDets[i] = detections
 	}
-
 	// Filter
 	filteredOld := FilterDetections(t.chosenLabels, starterDets[0])
 	filteredNew := FilterDetections(t.chosenLabels, starterDets[1])
-
 	// Rename from scratch
-	// The strategy is to rename the (n-1) detections and then match the (n) dets to those
-	// When a (n) det matches a (n-1) det, it copies its label
 	renamedOld := make([]objdet.Detection, 0, len(filteredOld))
 	for _, det := range filteredOld {
 		newDet := t.RenameFirstTime(det)
@@ -96,70 +116,63 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 	// Rename from temporal matches. New det copies old det's label
 	renamedNew := t.RenameFromMatches(matches, renamedOld, filteredNew)
 	// Don't actually need a mutex this time b/c nothing else should be accessing yet
-	t.oldDetections = [2][]objdet.Detection{renamedOld, renamedNew}
-	fmt.Printf("THE OLD DETS: %v\n", t.oldDetections)
+	t.oldDetections.Store(&[2][]objdet.Detection{renamedOld, renamedNew})
 
-	fmt.Println("Starting goroutine!")
+	// End of first pass
 
-	go func() error {
-		for {
+	t.activeBackgroundWorkers.Add(1)
+	viamutils.ManagedGo(func() {
+		t.run(stream, t.cancelContext)
+	}, func() {
+		t.cancelFunc()
+		stream.Close(t.cancelContext)
+		t.activeBackgroundWorkers.Done()
+	})
+
+	return t, nil
+}
+
+func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Context) {
+	for {
+		select {
+		case <-cancelableCtx.Done():
+			return
+		default:
+			streamCtx := context.Background()
 			start := time.Now()
 			// Load up the old detections
-			t.detMux.Lock()
-			namedOld := t.oldDetections[1]
-			t.detMux.Unlock()
+			namedOld := t.oldDetections.Load()[1]
 
 			// Take fresh detections from fresh image
-			img, _, err := stream.Next(ctx)
+			img, _, err := stream.Next(streamCtx)
 			if err != nil {
-				return err
+				return
 			}
-			detections, err := t.detector.Detections(ctx, img, nil)
+			detections, err := t.detector.Detections(streamCtx, img, nil)
 			if err != nil {
-				return err
+				return
 			}
 			filteredNew := FilterDetections(t.chosenLabels, detections)
 
 			// Build and solve cost matrix via Munkres' method
 			matchMtx := t.BuildMatchingMatrix(namedOld, filteredNew)
-			HA, err := hg.NewHungarianAlgorithm(matchMtx)
-			if err != nil {
-				return err
-			}
+			HA, _ := hg.NewHungarianAlgorithm(matchMtx)
 			matches := HA.Execute()
-
 			// Rename from temporal matches. New det copies old det's label
 			renamedNew := t.RenameFromMatches(matches, namedOld, filteredNew)
 
 			// Store the matched detections
-			t.detMux.Lock()
-			//t.oldDetections = [2][]objdet.Detection{namedOld, renamedNew}
-			t.oldDetections = [2][]objdet.Detection{namedOld, renamedNew}
-
-			t.detMux.Unlock()
+			t.oldDetections.Store(&[2][]objdet.Detection{namedOld, renamedNew})
 
 			done := time.Now()
 			took := done.Sub(start)
-
 			t.timeStats = append(t.timeStats, took)
-			fmt.Printf("This took: %v\n", took)
-			fmt.Printf("And got: %v\n", t.oldDetections[1])
-
 			waitFor := time.Duration((1/t.frequency)*float64(time.Second)) - took
 			if waitFor > time.Microsecond {
 				time.Sleep(waitFor)
 			}
-
 		}
-		return nil
-	}()
-	//time.Sleep(5 * time.Second)
-	//fmt.Println(t.oldDetections)
-	//
-	for {
 	}
-
-	return t, nil
 }
 
 // Config contains names for necessary resources (camera and vision service)
@@ -184,24 +197,6 @@ func (cfg *Config) Validate(path string) ([]string, error) {
 
 	// Return the resource names so that newTracker can access them as dependencies.
 	return []string{cfg.CameraName, cfg.DetectorName}, nil
-}
-
-type myTracker struct {
-	resource.Named
-	logger logging.Logger
-
-	detMux        sync.Mutex
-	oldDetections [2][]objdet.Detection
-	detChan       chan [2][]objdet.Detection
-
-	cam          camera.Camera
-	camName      string
-	detector     vision.Service
-	frequency    float64
-	chosenLabels map[string]float64
-	classCounter map[string]int
-	tracks       map[string][]objdet.Detection
-	timeStats    []time.Duration
 }
 
 // Reconfigure reconfigures with new settings.
@@ -245,22 +240,21 @@ func (t *myTracker) DetectionsFromCamera(
 	if cameraName != t.camName {
 		return nil, errors.Errorf("Camera name given to method, %v is not the same as configured camera %v", cameraName, t.camName)
 	}
-
-	t.detMux.Lock()
-	defer t.detMux.Unlock()
-	out := t.oldDetections
-	fmt.Println(out)
-	return out[1], nil
-
+	select {
+	case <-t.cancelContext.Done():
+		return nil, t.cancelContext.Err()
+	default:
+		return t.oldDetections.Load()[1], nil
+	}
 }
 
 func (t *myTracker) Detections(ctx context.Context, img image.Image, extra map[string]interface{}) ([]objdet.Detection, error) {
-	
-	t.detMux.Lock()
-	defer t.detMux.Unlock()
-	out := t.oldDetections
-	fmt.Println(out)
-	return out[1], nil
+	select {
+	case <-t.cancelContext.Done():
+		return nil, t.cancelContext.Err()
+	default:
+		return t.oldDetections.Load()[1], nil
+	}
 }
 
 func (t *myTracker) ClassificationsFromCamera(
@@ -287,6 +281,8 @@ func (t *myTracker) GetObjectPointClouds(
 }
 
 func (t *myTracker) Close(ctx context.Context) error {
+	t.cancelFunc()
+	t.activeBackgroundWorkers.Wait()
 	return nil
 }
 
