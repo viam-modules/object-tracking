@@ -22,7 +22,8 @@ import (
 	"image"
 )
 
-// ModelName is the name of the model
+// ModelName is the name of the model, MinConfidence is the minimum confidence of a detection
+// worth tracking, and DefaultMaxFrequency (in Hz) is the frequency of the bkgnd loop
 const (
 	ModelName           = "object-tracker"
 	MinConfidence       = 0.2
@@ -79,8 +80,7 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 	t.cancelFunc = cancel
 	t.cancelContext = cancelableCtx
 
-	// Do the first pass to populate the first set of 2 detections and start us off.
-	// Get the full first pass match before throwing them in
+	// Do the first pass to populate the first set of 2 detections.
 	starterDets := make([][]objdet.Detection, 2)
 	stream, err := t.cam.Stream(t.cancelContext, nil)
 	if err != nil {
@@ -97,10 +97,9 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 		}
 		starterDets[i] = detections
 	}
-	// Filter
 	filteredOld := FilterDetections(t.chosenLabels, starterDets[0])
 	filteredNew := FilterDetections(t.chosenLabels, starterDets[1])
-	// Rename from scratch
+	// Rename (from scratch)
 	renamedOld := make([]objdet.Detection, 0, len(filteredOld))
 	for _, det := range filteredOld {
 		newDet := t.RenameFirstTime(det)
@@ -115,10 +114,7 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 	matches := HA.Execute()
 	// Rename from temporal matches. New det copies old det's label
 	renamedNew := t.RenameFromMatches(matches, renamedOld, filteredNew)
-	// Don't actually need a mutex this time b/c nothing else should be accessing yet
 	t.oldDetections.Store(&[2][]objdet.Detection{renamedOld, renamedNew})
-
-	// End of first pass
 
 	t.activeBackgroundWorkers.Add(1)
 	viamutils.ManagedGo(func() {
@@ -132,6 +128,8 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 	return t, nil
 }
 
+// run is a (cancelable) infinite loop that takes new detections from the camera and compares them to
+// the most recently seen detections. Matching detections are linked via matching labels.
 func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Context) {
 	for {
 		select {
@@ -186,7 +184,6 @@ type Config struct {
 // Validate validates the config and returns implicit dependencies,
 // this Validate checks if the camera and detector(vision svc) exist for the module's vision model.
 func (cfg *Config) Validate(path string) ([]string, error) {
-	// check if the attribute fields for the right and left motors are non-empty
 	// this makes them required for the model to successfully build
 	if cfg.CameraName == "" {
 		return nil, fmt.Errorf(`expected "camera_name" attribute for object tracker %q`, path)
@@ -286,7 +283,7 @@ func (t *myTracker) Close(ctx context.Context) error {
 	return nil
 }
 
-// DoCommand simply echos whatever was sent.
+// DoCommand will return the slowest, fastest, and average time of the tracking module (1 loop run)
 func (t *myTracker) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
 	// average, fastest, and slowest time (and n)
 	tmin, tmax := 10*time.Second, 10*time.Nanosecond
@@ -303,9 +300,10 @@ func (t *myTracker) DoCommand(ctx context.Context, cmd map[string]interface{}) (
 	}
 	mean := time.Duration(int64(sum) / n)
 	out := map[string]interface{}{
-		"slowest": fmt.Sprintf("%s", tmax),
-		"fastest": fmt.Sprintf("%s", tmin),
-		"average": fmt.Sprintf("%s", mean),
+		"slowest":        fmt.Sprintf("%s", tmax),
+		"fastest":        fmt.Sprintf("%s", tmin),
+		"average":        fmt.Sprintf("%s", mean),
+		"number of runs": fmt.Sprintf("%v", n),
 	}
 	return out, nil
 }
