@@ -22,8 +22,7 @@ import (
 	"image"
 )
 
-// ModelName is the name of the model, MinConfidence is the minimum confidence of a detection
-// worth tracking, and DefaultMaxFrequency (in Hz) is the frequency of the bkgnd loop
+// ModelName is the name of the model
 const (
 	ModelName = "object-tracker"
 )
@@ -300,7 +299,7 @@ func (t *myTracker) Close(ctx context.Context) error {
 	return nil
 }
 
-// DoCommand will return the slowest, fastest, and average time of the tracking module (1 loop run)
+// DoCommand will return the slowest, fastest, and average time of the tracking module
 func (t *myTracker) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
 	// average, fastest, and slowest time (and n)
 	tmin, tmax := 10*time.Second, 10*time.Nanosecond
