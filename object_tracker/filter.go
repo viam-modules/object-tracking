@@ -31,7 +31,7 @@ func NewAdvancedFilter(chosenLabels map[string]float64) objdet.Postprocessor {
 	}
 }
 
-func FilterDetections(chosenLabels map[string]float64, dets []objdet.Detection) []objdet.Detection {
+func FilterDetections(chosenLabels map[string]float64, dets []objdet.Detection, conf float64) []objdet.Detection {
 	firstPass := NewAdvancedFilter(chosenLabels)(dets)
-	return objdet.NewScoreFilter(MinConfidence)(firstPass)
+	return objdet.NewScoreFilter(conf)(firstPass)
 }

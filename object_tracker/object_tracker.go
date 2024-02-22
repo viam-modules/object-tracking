@@ -25,15 +25,15 @@ import (
 // ModelName is the name of the model, MinConfidence is the minimum confidence of a detection
 // worth tracking, and DefaultMaxFrequency (in Hz) is the frequency of the bkgnd loop
 const (
-	ModelName           = "object-tracker"
-	MinConfidence       = 0.2
-	DefaultMaxFrequency = 10
+	ModelName = "object-tracker"
 )
 
-// Here is where we define your new model's colon-delimited-triplet (viam:vision:object-tracker)
 var (
-	Model            = resource.NewModel("viam", "vision", ModelName)
-	errUnimplemented = errors.New("unimplemented")
+	// Here is where we define your new model's colon-delimited-triplet (viam:vision:object-tracker)
+	Model                = resource.NewModel("viam", "vision", ModelName)
+	errUnimplemented     = errors.New("unimplemented")
+	DefaultMinConfidence = 0.2
+	DefaultMaxFrequency  = 10.0
 )
 
 func init() {
@@ -50,14 +50,15 @@ type myTracker struct {
 	activeBackgroundWorkers sync.WaitGroup
 	oldDetections           atomic.Pointer[[2][]objdet.Detection]
 
-	cam          camera.Camera
-	camName      string
-	detector     vision.Service
-	frequency    float64
-	chosenLabels map[string]float64
-	classCounter map[string]int
-	tracks       map[string][]objdet.Detection
-	timeStats    []time.Duration
+	cam           camera.Camera
+	camName       string
+	detector      vision.Service
+	frequency     float64
+	minConfidence float64
+	chosenLabels  map[string]float64
+	classCounter  map[string]int
+	tracks        map[string][]objdet.Detection
+	timeStats     []time.Duration
 }
 
 func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.Config, logger logging.Logger) (vision.Service, error) {
@@ -91,14 +92,14 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 		if err != nil {
 			return nil, err
 		}
-		detections, err := t.detector.Detections(t.cancelContext, img, nil)
+		detections, err := t.detector.Detections(ctx, img, nil)
 		if err != nil {
 			return nil, err
 		}
 		starterDets[i] = detections
 	}
-	filteredOld := FilterDetections(t.chosenLabels, starterDets[0])
-	filteredNew := FilterDetections(t.chosenLabels, starterDets[1])
+	filteredOld := FilterDetections(t.chosenLabels, starterDets[0], t.minConfidence)
+	filteredNew := FilterDetections(t.chosenLabels, starterDets[1], t.minConfidence)
 	// Rename (from scratch)
 	renamedOld := make([]objdet.Detection, 0, len(filteredOld))
 	for _, det := range filteredOld {
@@ -122,6 +123,7 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 	}, func() {
 		t.cancelFunc()
 		stream.Close(t.cancelContext)
+		ctx.Done()
 		t.activeBackgroundWorkers.Done()
 	})
 
@@ -136,21 +138,22 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 		case <-cancelableCtx.Done():
 			return
 		default:
-			streamCtx := context.Background()
 			start := time.Now()
 			// Load up the old detections
 			namedOld := t.oldDetections.Load()[1]
 
 			// Take fresh detections from fresh image
-			img, _, err := stream.Next(streamCtx)
+			img, _, err := stream.Next(cancelableCtx)
 			if err != nil {
+				t.logger.Error(err)
 				return
 			}
-			detections, err := t.detector.Detections(streamCtx, img, nil)
+			detections, err := t.detector.Detections(cancelableCtx, img, nil)
 			if err != nil {
+				t.logger.Error(err)
 				return
 			}
-			filteredNew := FilterDetections(t.chosenLabels, detections)
+			filteredNew := FilterDetections(t.chosenLabels, detections, t.minConfidence)
 
 			// Build and solve cost matrix via Munkres' method
 			matchMtx := t.BuildMatchingMatrix(namedOld, filteredNew)
@@ -175,10 +178,11 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 
 // Config contains names for necessary resources (camera and vision service)
 type Config struct {
-	CameraName   string             `json:"camera_name"`
-	DetectorName string             `json:"detector_name"`
-	ChosenLabels map[string]float64 `json:"chosen_labels"`
-	MaxFrequency float64            `json:"max_frequency_hz"`
+	CameraName    string             `json:"camera_name"`
+	DetectorName  string             `json:"detector_name"`
+	ChosenLabels  map[string]float64 `json:"chosen_labels"`
+	MaxFrequency  float64            `json:"max_frequency_hz"`
+	MinConfidence *float64           `json:"min_confidence,omitempty"`
 }
 
 // Validate validates the config and returns implicit dependencies,
@@ -216,6 +220,15 @@ func (t *myTracker) Reconfigure(ctx context.Context, deps resource.Dependencies,
 	}
 	t.frequency = trackerConfig.MaxFrequency
 
+	if trackerConfig.MinConfidence != nil {
+		t.minConfidence = *trackerConfig.MinConfidence
+	} else {
+		t.minConfidence = DefaultMinConfidence
+	}
+	if t.minConfidence < 0 || t.minConfidence > 1 {
+		return errors.New("minimum thresholding confidence must be between 0.0 and 1.0")
+	}
+
 	t.chosenLabels = trackerConfig.ChosenLabels
 	t.camName = trackerConfig.CameraName
 	t.cam, err = camera.FromDependencies(deps, trackerConfig.CameraName)
@@ -240,6 +253,8 @@ func (t *myTracker) DetectionsFromCamera(
 	select {
 	case <-t.cancelContext.Done():
 		return nil, t.cancelContext.Err()
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	default:
 		return t.oldDetections.Load()[1], nil
 	}
@@ -249,6 +264,8 @@ func (t *myTracker) Detections(ctx context.Context, img image.Image, extra map[s
 	select {
 	case <-t.cancelContext.Done():
 		return nil, t.cancelContext.Err()
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	default:
 		return t.oldDetections.Load()[1], nil
 	}
