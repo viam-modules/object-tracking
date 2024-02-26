@@ -24,7 +24,7 @@ Navigate to the **Config** tab of your robot’s page in [the Viam app](https://
       "type": "registry",
       "name": "viam_object-tracker",
       "module_id": "viam:object-tracker",
-      "version": "0.0.1"
+      "version": "latest"
     }
   ],
   "services": [
@@ -60,7 +60,8 @@ The following attributes are available for `viam:vision:object-tracker` vision s
 | ---- | ---- | --------- | ----------- |
 | `camera_name` | string | **Required** | The name of the camera configured on your robot. |
 | `detector_name` | string | **Required** | The name of the detector (vision service) configured on your robot. |
-| `max_frequency_hz` | float64 | **Optional** | The fastest frequency (in Hz) that the model should run in. Default = 10.
+| `min_confidence` | float64 | **Optional** | A number between 0-1. Any detection with a confidence below this number will not be tracked. Default = 0.2 |
+| `max_frequency_hz` | float64 | **Optional** | The fastest frequency (in Hz) that the model should run in. Default = 10. |
 | `chosen_labels` | map[string]float64 | **Optional** |  A list of class names (string) and confidence scores (float[0-1]) such that **only** detections with a class name in the list and a confidence above the corresponding score are included. |
 
 ### Usage
