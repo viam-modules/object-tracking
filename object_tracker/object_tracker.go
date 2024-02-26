@@ -122,7 +122,6 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 	}, func() {
 		t.cancelFunc()
 		stream.Close(t.cancelContext)
-		ctx.Done()
 		t.activeBackgroundWorkers.Done()
 	})
 
