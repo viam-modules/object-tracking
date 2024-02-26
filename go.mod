@@ -3,6 +3,7 @@ module github.com/viam-labs/object-tracker
 go 1.21.4
 
 require (
+	github.com/charles-haynes/munkres v0.0.0-20191008174651-55d467190535
 	github.com/pkg/errors v0.9.1
 	go.viam.com/rdk v0.17.0
 	go.viam.com/utils v0.1.54

@@ -1,4 +1,5 @@
-// Package object_tracker does the object tracking or whateva
+// Package object_tracker implements an object tracker as a Viam vision service
+// This file contains methods that are useful for filtering out detections.
 package object_tracker
 
 import (
@@ -6,16 +7,20 @@ import (
 	"strings"
 )
 
+// NewAdvancedFilter returns a Detections->Detections filtering method to remove
+// detections that do not have a class name in chosenLabels and/or do not have the
+// associated minimum confidence. An empty input map will return all detections.
+// Input chosenLabels is the map with <"class_name": confidence> key-value pairs.
 func NewAdvancedFilter(chosenLabels map[string]float64) objdet.Postprocessor {
 	return func(detections []objdet.Detection) []objdet.Detection {
-		// If it's empty don't bother. Return the input.
+		// If it's empty, return the input.
 		if len(chosenLabels) < 1 {
 			return detections
 		}
-
 		out := make([]objdet.Detection, 0, len(detections))
 		for _, d := range detections {
-			minConf, ok := chosenLabels[strings.ToLower(d.Label())]
+			baseLabel := strings.ToLower(strings.Split(d.Label(), "_")[0])
+			minConf, ok := chosenLabels[baseLabel]
 			if ok {
 				if d.Score() > minConf {
 					out = append(out, d)
@@ -23,8 +28,10 @@ func NewAdvancedFilter(chosenLabels map[string]float64) objdet.Postprocessor {
 			}
 		}
 		return out
-		// For each detection look at it. Check if the class is in chosen labels
-		// If it is, check that the confidence is above the corresponding shit.
-		// If it is, cool. Include it. If at any point it fucks up, remove it.
 	}
+}
+
+func FilterDetections(chosenLabels map[string]float64, dets []objdet.Detection, conf float64) []objdet.Detection {
+	firstPass := NewAdvancedFilter(chosenLabels)(dets)
+	return objdet.NewScoreFilter(conf)(firstPass)
 }
