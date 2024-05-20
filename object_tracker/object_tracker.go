@@ -132,9 +132,6 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 // the most recently seen detections. Matching detections are linked via matching labels.
 func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Context) {
 	for {
-		if cancelableCtx.Err() != nil {
-			return
-		}
 		select {
 		case <-cancelableCtx.Done():
 			return
@@ -165,13 +162,15 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 
 			// Store the matched detections
 			t.oldDetections.Store(&[2][]objdet.Detection{namedOld, renamedNew})
-
-			done := time.Now()
-			took := done.Sub(start)
-			t.timeStats = append(t.timeStats, took)
-			waitFor := time.Duration((1/t.frequency)*float64(time.Second)) - took
+			
+			took := time.Since(start)
+			waitFor := time.Duration((1/t.frequency)*float64(time.Second)) - took // only poll according to set freq
 			if waitFor > time.Microsecond {
-				time.Sleep(waitFor)
+				select {
+				case <-cancelableCtx.Done():
+					return
+				case <-time.After(waitFor):
+				}
 			}
 		}
 	}
