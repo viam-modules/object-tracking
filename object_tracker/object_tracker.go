@@ -132,6 +132,9 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 // the most recently seen detections. Matching detections are linked via matching labels.
 func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Context) {
 	for {
+		if cancelableCtx.Err() != nil {
+			return
+		}
 		select {
 		case <-cancelableCtx.Done():
 			return
