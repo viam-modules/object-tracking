@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"go.viam.com/rdk/gostream"
+	"go.viam.com/rdk/vision/viscapture"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -48,7 +49,8 @@ type myTracker struct {
 	cancelContext           context.Context
 	activeBackgroundWorkers sync.WaitGroup
 	oldDetections           atomic.Pointer[[2][]objdet.Detection]
-	img                     atomic.Pointer[image.Image]
+	currImg                 atomic.Pointer[image.Image]
+	properties              vision.Properties
 
 	cam           camera.Camera
 	camName       string
@@ -67,6 +69,10 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 		logger:       logger,
 		classCounter: make(map[string]int),
 		tracks:       make(map[string][]objdet.Detection),
+		properties: vision.Properties{ClassificationSupported: false,
+			DetectionSupported:  true,
+			ObjectPCDsSupported: false,
+		},
 	}
 
 	if err := t.Reconfigure(ctx, deps, conf); err != nil {
@@ -143,7 +149,6 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 
 			// Take fresh detections from fresh image
 			img, _, err := stream.Next(cancelableCtx)
-			t.img.Store(&img)
 			if err != nil {
 				t.logger.Error(err)
 				return
@@ -162,16 +167,18 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 			// Rename from temporal matches. New det copies old det's label
 			renamedNew := t.RenameFromMatches(matches, namedOld, filteredNew)
 
-			// Store the matched detections
+			// Store the matched detections and image
 			t.oldDetections.Store(&[2][]objdet.Detection{namedOld, renamedNew})
+			t.currImg.Store(&img)
 
 			took := time.Since(start)
-			waitFor := time.Duration((1/t.frequency)*float64(time.Second)) - took // only poll according to set freq
+			waitFor := time.Duration((1/t.frequency)*float64(time.Second)) - took
 			if waitFor > time.Microsecond {
 				select {
 				case <-cancelableCtx.Done():
 					return
 				case <-time.After(waitFor):
+					time.Sleep(waitFor)
 				}
 			}
 		}
@@ -288,6 +295,9 @@ func (t *myTracker) Classifications(ctx context.Context, img image.Image,
 	return nil, errUnimplemented
 }
 
+func (t *myTracker) GetProperties(ctx context.Context, extra map[string]interface{}) (*vision.Properties, error) {
+	return &t.properties, nil
+}
 func (t *myTracker) GetObjectPointClouds(
 	ctx context.Context,
 	cameraName string,
@@ -296,13 +306,47 @@ func (t *myTracker) GetObjectPointClouds(
 	return nil, errUnimplemented
 }
 
+func (t *myTracker) CaptureAllFromCamera(
+	ctx context.Context,
+	cameraName string,
+	opt viscapture.CaptureOptions,
+	extra map[string]interface{},
+) (viscapture.VisCapture, error) {
+	var detections []objdet.Detection
+	var img image.Image
+	select {
+	case <-t.cancelContext.Done():
+		return viscapture.VisCapture{}, t.cancelContext.Err()
+	case <-ctx.Done():
+		return viscapture.VisCapture{}, ctx.Err()
+	default:
+		if opt.ReturnImage {
+			if cameraName != t.camName {
+				return viscapture.VisCapture{}, errors.Errorf("Camera name given to method, %v is not the same as configured camera %v", cameraName, t.camName)
+			}
+			if opt.ReturnClassifications {
+				t.logger.Debugf("classifications requested but object tracker  %q does not implement a Detector", t.Named.Name())
+			}
+			if opt.ReturnObject {
+				t.logger.Debugf("point cloud objects requested but object tracker  %q does not return point cloud objects", t.Named.Name())
+			}
+			if opt.ReturnObject {
+				detections = t.oldDetections.Load()[1]
+			}
+			if opt.ReturnImage {
+				img = *t.currImg.Load()
+			}
+		}
+		return viscapture.VisCapture{Image: img, Detections: detections}, nil
+	}
+
+}
+
 func (t *myTracker) Close(ctx context.Context) error {
 	t.cancelFunc()
 	t.activeBackgroundWorkers.Wait()
 	return nil
 }
-
-//func (t *myTracker) CaptureAllFromCamera() {}
 
 // DoCommand will return the slowest, fastest, and average time of the tracking module
 func (t *myTracker) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
