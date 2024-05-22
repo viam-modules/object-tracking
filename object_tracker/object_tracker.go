@@ -48,6 +48,7 @@ type myTracker struct {
 	cancelContext           context.Context
 	activeBackgroundWorkers sync.WaitGroup
 	oldDetections           atomic.Pointer[[2][]objdet.Detection]
+	img                     atomic.Pointer[image.Image]
 
 	cam           camera.Camera
 	camName       string
@@ -142,6 +143,7 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 
 			// Take fresh detections from fresh image
 			img, _, err := stream.Next(cancelableCtx)
+			t.img.Store(&img)
 			if err != nil {
 				t.logger.Error(err)
 				return
@@ -162,7 +164,7 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 
 			// Store the matched detections
 			t.oldDetections.Store(&[2][]objdet.Detection{namedOld, renamedNew})
-			
+
 			took := time.Since(start)
 			waitFor := time.Duration((1/t.frequency)*float64(time.Second)) - took // only poll according to set freq
 			if waitFor > time.Microsecond {
@@ -299,6 +301,8 @@ func (t *myTracker) Close(ctx context.Context) error {
 	t.activeBackgroundWorkers.Wait()
 	return nil
 }
+
+//func (t *myTracker) CaptureAllFromCamera() {}
 
 // DoCommand will return the slowest, fastest, and average time of the tracking module
 func (t *myTracker) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
