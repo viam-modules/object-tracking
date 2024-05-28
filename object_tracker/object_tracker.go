@@ -69,9 +69,10 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 		logger:       logger,
 		classCounter: make(map[string]int),
 		tracks:       make(map[string][]objdet.Detection),
-		properties: vision.Properties{ClassificationSupported: false,
-			DetectionSupported:  true,
-			ObjectPCDsSupported: false,
+		properties: vision.Properties{
+			ClassificationSupported: false,
+			DetectionSupported:      true,
+			ObjectPCDsSupported:     false,
 		},
 	}
 
@@ -172,13 +173,13 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 			t.currImg.Store(&img)
 
 			took := time.Since(start)
+			t.timeStats = append(t.timeStats, took)
 			waitFor := time.Duration((1/t.frequency)*float64(time.Second)) - took
 			if waitFor > time.Microsecond {
 				select {
 				case <-cancelableCtx.Done():
 					return
 				case <-time.After(waitFor):
-					time.Sleep(waitFor)
 				}
 			}
 		}
@@ -324,22 +325,13 @@ func (t *myTracker) CaptureAllFromCamera(
 			if cameraName != t.camName {
 				return viscapture.VisCapture{}, errors.Errorf("Camera name given to method, %v is not the same as configured camera %v", cameraName, t.camName)
 			}
-			if opt.ReturnClassifications {
-				t.logger.Debugf("classifications requested but object tracker  %q does not implement a Detector", t.Named.Name())
-			}
-			if opt.ReturnObject {
-				t.logger.Debugf("point cloud objects requested but object tracker  %q does not return point cloud objects", t.Named.Name())
-			}
-			if opt.ReturnObject {
-				detections = t.oldDetections.Load()[1]
-			}
-			if opt.ReturnImage {
-				img = *t.currImg.Load()
-			}
+			img = *t.currImg.Load()
 		}
-		return viscapture.VisCapture{Image: img, Detections: detections}, nil
+		if opt.ReturnDetections {
+			detections = t.oldDetections.Load()[1]
+		}
 	}
-
+	return viscapture.VisCapture{Image: img, Detections: detections}, nil
 }
 
 func (t *myTracker) Close(ctx context.Context) error {
