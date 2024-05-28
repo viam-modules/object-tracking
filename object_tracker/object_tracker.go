@@ -50,7 +50,13 @@ type myTracker struct {
 	activeBackgroundWorkers sync.WaitGroup
 	oldDetections           atomic.Pointer[[2][]objdet.Detection]
 	currImg                 atomic.Pointer[image.Image]
-	properties              vision.Properties
+	allClass                atomic.Pointer[classification.Classifications]
+
+	channel chan []objdet.Detection
+
+	newInstance atomic.Bool
+	coolDown    float64
+	properties  vision.Properties
 
 	cam           camera.Camera
 	camName       string
@@ -64,15 +70,19 @@ type myTracker struct {
 }
 
 func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.Config, logger logging.Logger) (vision.Service, error) {
+
 	t := &myTracker{
 		Named:        conf.ResourceName().AsNamed(),
 		logger:       logger,
 		classCounter: make(map[string]int),
 		tracks:       make(map[string][]objdet.Detection),
-		properties: vision.Properties{ClassificationSupported: false,
-			DetectionSupported:  true,
-			ObjectPCDsSupported: false,
+		properties: vision.Properties{
+			ClassificationSupported: false,
+			DetectionSupported:      true,
+			ObjectPCDsSupported:     false,
 		},
+		coolDown: 2,
+		channel:  make(chan []objdet.Detection, 1024),
 	}
 
 	if err := t.Reconfigure(ctx, deps, conf); err != nil {
@@ -120,7 +130,7 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 	}
 	matches := HA.Execute()
 	// Rename from temporal matches. New det copies old det's label
-	renamedNew := t.RenameFromMatches(matches, renamedOld, filteredNew)
+	renamedNew, _ := t.RenameFromMatches(matches, renamedOld, filteredNew)
 	t.oldDetections.Store(&[2][]objdet.Detection{renamedOld, renamedNew})
 
 	t.activeBackgroundWorkers.Add(1)
@@ -165,20 +175,23 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 			HA, _ := hg.NewHungarianAlgorithm(matchMtx)
 			matches := HA.Execute()
 			// Rename from temporal matches. New det copies old det's label
-			renamedNew := t.RenameFromMatches(matches, namedOld, filteredNew)
+			curDets, newDets := t.RenameFromMatches(matches, namedOld, filteredNew)
+			if len(newDets) > 0 {
+				t.channel <- newDets
+			}
 
 			// Store the matched detections and image
-			t.oldDetections.Store(&[2][]objdet.Detection{namedOld, renamedNew})
+			t.oldDetections.Store(&[2][]objdet.Detection{namedOld, curDets})
 			t.currImg.Store(&img)
 
 			took := time.Since(start)
 			waitFor := time.Duration((1/t.frequency)*float64(time.Second)) - took
+			t.timeStats = append(t.timeStats, took)
 			if waitFor > time.Microsecond {
 				select {
 				case <-cancelableCtx.Done():
 					return
 				case <-time.After(waitFor):
-					time.Sleep(waitFor)
 				}
 			}
 		}
@@ -286,7 +299,72 @@ func (t *myTracker) ClassificationsFromCamera(
 	n int,
 	extra map[string]interface{},
 ) (classification.Classifications, error) {
-	return nil, errUnimplemented
+	//var classifications classification.Classifications
+	if cameraName != t.camName {
+		return nil, errors.Errorf("Camera name given to method, %v is not the same as configured camera %v", cameraName, t.camName)
+	}
+	//var dets []objdet.Detection
+	var res []classification.Classification
+
+	for {
+		select {
+		case <-t.cancelContext.Done():
+			return nil, t.cancelContext.Err()
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case dets, ok := <-t.channel:
+			if !ok {
+				// The channel is closed
+				t.logger.Error("CHANNEL CLOSED")
+				return res, nil
+			}
+			t.logger.Errorf("GOT DETS : %s", dets)
+			for _, det := range dets {
+				label := det.Label()
+				res = append(res, classification.NewClassification(1, label))
+			}
+		default:
+			return res, nil
+		}
+	}
+	//select {
+	//case <-t.cancelContext.Done():
+	//	return nil, t.cancelContext.Err()
+	//case <-ctx.Done():
+	//	return nil, ctx.Err()
+	//case dets, ok := <-t.channel:
+	//	if !ok {
+	//		// The channel is closed
+	//		t.logger.Error("CHANNEL CLOSED")
+	//		return res, nil
+	//	}
+	//for i := 0; i < t.maxBufferSize; i++ {
+	//	t.logger.Errorf("Start iteration %d", i)
+	//	dets = t.consumer.Get() //loops over the buffer
+	//	t.logger.Errorf("GOT %d", dets)
+	//	if dets == nil {
+	//		continue
+	//	} else {
+	//		for _, det := range dets {
+	//			label := det.Label()
+	//			res[i] = classification.NewClassification(1, label)
+	//		}
+	//	}
+	//
+	//}
+	//	t.logger.Error("READING FROM CHANNEL")
+	//	for dets := range t.channel {
+	//		t.logger.Errorf("GOT DETS : %s", dets)
+	//		for _, det := range dets {
+	//			label := det.Label()
+	//			res = append(res, classification.NewClassification(1, label))
+	//		}
+	//	}
+	//	t.logger.Error("READING FROM CHANNEL")
+	//	return res, nil
+	//default:
+	//	return nil, nil
+	//}
 }
 
 func (t *myTracker) Classifications(ctx context.Context, img image.Image,
@@ -324,22 +402,13 @@ func (t *myTracker) CaptureAllFromCamera(
 			if cameraName != t.camName {
 				return viscapture.VisCapture{}, errors.Errorf("Camera name given to method, %v is not the same as configured camera %v", cameraName, t.camName)
 			}
-			if opt.ReturnClassifications {
-				t.logger.Debugf("classifications requested but object tracker  %q does not implement a Detector", t.Named.Name())
-			}
-			if opt.ReturnObject {
-				t.logger.Debugf("point cloud objects requested but object tracker  %q does not return point cloud objects", t.Named.Name())
-			}
-			if opt.ReturnObject {
-				detections = t.oldDetections.Load()[1]
-			}
-			if opt.ReturnImage {
-				img = *t.currImg.Load()
-			}
+			img = *t.currImg.Load()
 		}
-		return viscapture.VisCapture{Image: img, Detections: detections}, nil
+		if opt.ReturnDetections {
+			detections = t.oldDetections.Load()[1]
+		}
 	}
-
+	return viscapture.VisCapture{Image: img, Detections: detections}, nil
 }
 
 func (t *myTracker) Close(ctx context.Context) error {
