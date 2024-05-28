@@ -74,7 +74,6 @@ type myTracker struct {
 }
 
 func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.Config, logger logging.Logger) (vision.Service, error) {
-
 	t := &myTracker{
 		Named:        conf.ResourceName().AsNamed(),
 		logger:       logger,
@@ -196,6 +195,7 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 			t.currImg.Store(&img)
 
 			took := time.Since(start)
+			t.timeStats = append(t.timeStats, took)
 			waitFor := time.Duration((1/t.frequency)*float64(time.Second)) - took
 			t.timeStats = append(t.timeStats, took)
 			if waitFor > time.Microsecond {
@@ -310,34 +310,7 @@ func (t *myTracker) ClassificationsFromCamera(
 	n int,
 	extra map[string]interface{},
 ) (classification.Classifications, error) {
-	//var classifications classification.Classifications
-	if cameraName != t.camName {
-		return nil, errors.Errorf("Camera name given to method, %v is not the same as configured camera %v", cameraName, t.camName)
-	}
-	//var dets []objdet.Detection
-	var res []classification.Classification
-
-	for {
-		select {
-		case <-t.cancelContext.Done():
-			return nil, t.cancelContext.Err()
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case dets, ok := <-t.channel:
-			if !ok {
-				// The channel is closed
-				t.logger.Error("CHANNEL CLOSED")
-				return res, nil
-			}
-			t.logger.Errorf("GOT DETS : %s", dets)
-			for _, det := range dets {
-				label := det.Label()
-				res = append(res, classification.NewClassification(1, label))
-			}
-		default:
-			return res, nil
-		}
-	}
+	return nil, errUnimplemented
 }
 
 func (t *myTracker) Classifications(ctx context.Context, img image.Image,
