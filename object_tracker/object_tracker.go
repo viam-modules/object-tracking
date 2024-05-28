@@ -36,6 +36,11 @@ var (
 	DefaultMaxFrequency  = 10.0
 )
 
+type allClassifications struct {
+	mutex sync.RWMutex
+	class []string
+}
+
 func init() {
 	resource.RegisterService(vision.API, Model, resource.Registration[vision.Service, *Config]{
 		Constructor: newTracker,
@@ -50,9 +55,8 @@ type myTracker struct {
 	activeBackgroundWorkers sync.WaitGroup
 	oldDetections           atomic.Pointer[[2][]objdet.Detection]
 	currImg                 atomic.Pointer[image.Image]
-	allClass                atomic.Pointer[classification.Classifications]
 
-	channel chan []objdet.Detection
+	ac allClassifications
 
 	newInstance atomic.Bool
 	coolDown    float64
@@ -82,7 +86,9 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 			ObjectPCDsSupported:     false,
 		},
 		coolDown: 2,
-		channel:  make(chan []objdet.Detection, 1024),
+		ac: allClassifications{
+			class: []string{},
+		},
 	}
 
 	if err := t.Reconfigure(ctx, deps, conf); err != nil {
@@ -177,7 +183,12 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 			// Rename from temporal matches. New det copies old det's label
 			curDets, newDets := t.RenameFromMatches(matches, namedOld, filteredNew)
 			if len(newDets) > 0 {
-				t.channel <- newDets
+				t.ac.mutex.Lock()
+				for _, det := range newDets {
+					label := det.Label()
+					t.ac.class = append(t.ac.class, label)
+				}
+				t.ac.mutex.Unlock()
 			}
 
 			// Store the matched detections and image
@@ -327,44 +338,6 @@ func (t *myTracker) ClassificationsFromCamera(
 			return res, nil
 		}
 	}
-	//select {
-	//case <-t.cancelContext.Done():
-	//	return nil, t.cancelContext.Err()
-	//case <-ctx.Done():
-	//	return nil, ctx.Err()
-	//case dets, ok := <-t.channel:
-	//	if !ok {
-	//		// The channel is closed
-	//		t.logger.Error("CHANNEL CLOSED")
-	//		return res, nil
-	//	}
-	//for i := 0; i < t.maxBufferSize; i++ {
-	//	t.logger.Errorf("Start iteration %d", i)
-	//	dets = t.consumer.Get() //loops over the buffer
-	//	t.logger.Errorf("GOT %d", dets)
-	//	if dets == nil {
-	//		continue
-	//	} else {
-	//		for _, det := range dets {
-	//			label := det.Label()
-	//			res[i] = classification.NewClassification(1, label)
-	//		}
-	//	}
-	//
-	//}
-	//	t.logger.Error("READING FROM CHANNEL")
-	//	for dets := range t.channel {
-	//		t.logger.Errorf("GOT DETS : %s", dets)
-	//		for _, det := range dets {
-	//			label := det.Label()
-	//			res = append(res, classification.NewClassification(1, label))
-	//		}
-	//	}
-	//	t.logger.Error("READING FROM CHANNEL")
-	//	return res, nil
-	//default:
-	//	return nil, nil
-	//}
 }
 
 func (t *myTracker) Classifications(ctx context.Context, img image.Image,
@@ -420,24 +393,31 @@ func (t *myTracker) Close(ctx context.Context) error {
 // DoCommand will return the slowest, fastest, and average time of the tracking module
 func (t *myTracker) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
 	// average, fastest, and slowest time (and n)
-	tmin, tmax := 10*time.Second, 10*time.Nanosecond
-	n := int64(len(t.timeStats))
-	var sum time.Duration
-	for _, tt := range t.timeStats {
-		if tt < tmin {
-			tmin = tt
+	out := make(map[string]interface{})
+	if cmd["benchmark"] != nil {
+		tmin, tmax := 10*time.Second, 10*time.Nanosecond
+		n := int64(len(t.timeStats))
+		var sum time.Duration
+		for _, tt := range t.timeStats {
+			if tt < tmin {
+				tmin = tt
+			}
+			if tt > tmax {
+				tmax = tt
+			}
+			sum += tt
 		}
-		if tt > tmax {
-			tmax = tt
-		}
-		sum += tt
+		mean := time.Duration(int64(sum) / n)
+		out["slowest"] = fmt.Sprintf("%s", tmax)
+		out["fastest"] = fmt.Sprintf("%s", tmin)
+		out["average"] = fmt.Sprintf("%s", mean)
+		out["number of runs"] = fmt.Sprintf("%v", n)
+
 	}
-	mean := time.Duration(int64(sum) / n)
-	out := map[string]interface{}{
-		"slowest":        fmt.Sprintf("%s", tmax),
-		"fastest":        fmt.Sprintf("%s", tmin),
-		"average":        fmt.Sprintf("%s", mean),
-		"number of runs": fmt.Sprintf("%v", n),
+	if cmd["log_all"] != nil {
+		t.ac.mutex.RLock()
+		out["log"] = t.ac.class
+		t.ac.mutex.RUnlock()
 	}
 	return out, nil
 }
