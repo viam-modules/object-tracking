@@ -30,10 +30,11 @@ const (
 
 var (
 	// Here is where we define your new model's colon-delimited-triplet (viam:vision:object-tracker)
-	Model                = resource.NewModel("viam", "vision", ModelName)
-	errUnimplemented     = errors.New("unimplemented")
-	DefaultMinConfidence = 0.2
-	DefaultMaxFrequency  = 10.0
+	Model                  = resource.NewModel("viam", "vision", ModelName)
+	errUnimplemented       = errors.New("unimplemented")
+	DefaultMinConfidence   = 0.2
+	DefaultMaxFrequency    = 10.0
+	DefaultTriggerCoolDown = 10.0
 )
 
 type allClassifications struct {
@@ -49,9 +50,13 @@ func init() {
 
 type myTracker struct {
 	resource.Named
-	logger                  logging.Logger
-	cancelFunc              context.CancelFunc
-	cancelContext           context.Context
+	logger        logging.Logger
+	cancelFunc    context.CancelFunc
+	cancelContext context.Context
+
+	triggerCancelFunc context.CancelFunc
+	triggerContext    context.Context
+
 	activeBackgroundWorkers sync.WaitGroup
 	oldDetections           atomic.Pointer[[2][]objdet.Detection]
 	currImg                 atomic.Pointer[image.Image]
@@ -80,11 +85,10 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 		classCounter: make(map[string]int),
 		tracks:       make(map[string][]objdet.Detection),
 		properties: vision.Properties{
-			ClassificationSupported: false,
+			ClassificationSupported: true,
 			DetectionSupported:      true,
 			ObjectPCDsSupported:     false,
 		},
-		coolDown: 2,
 		ac: allClassifications{
 			class: []string{},
 		},
@@ -182,6 +186,32 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 			// Rename from temporal matches. New det copies old det's label
 			curDets, newDets := t.RenameFromMatches(matches, namedOld, filteredNew)
 			if len(newDets) > 0 {
+				if t.triggerCancelFunc != nil {
+					t.triggerCancelFunc()
+				}
+				triggerContext, triggerCancelFunc := context.WithCancel(t.cancelContext)
+				t.triggerContext = triggerContext
+				t.triggerCancelFunc = triggerCancelFunc
+
+				t.newInstance.Store(true)
+				t.activeBackgroundWorkers.Add(1)
+
+				go func() {
+					coolDownTimer := time.After(time.Duration(t.coolDown * float64(time.Second)))
+					for {
+						select {
+						case <-coolDownTimer:
+							t.newInstance.Store(false)
+							t.activeBackgroundWorkers.Done()
+							return
+						case <-t.triggerContext.Done():
+							t.activeBackgroundWorkers.Done()
+							return
+						}
+					}
+				}()
+
+				// add the detections to the logs
 				t.ac.mutex.Lock()
 				for _, det := range newDets {
 					label := det.Label()
@@ -211,11 +241,12 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 
 // Config contains names for necessary resources (camera and vision service)
 type Config struct {
-	CameraName    string             `json:"camera_name"`
-	DetectorName  string             `json:"detector_name"`
-	ChosenLabels  map[string]float64 `json:"chosen_labels"`
-	MaxFrequency  float64            `json:"max_frequency_hz"`
-	MinConfidence *float64           `json:"min_confidence,omitempty"`
+	CameraName      string             `json:"camera_name"`
+	DetectorName    string             `json:"detector_name"`
+	ChosenLabels    map[string]float64 `json:"chosen_labels"`
+	MaxFrequency    float64            `json:"max_frequency_hz"`
+	MinConfidence   *float64           `json:"min_confidence,omitempty"`
+	TriggerCoolDown *float64           `json:"trigger_cool_down_s,omitempty"`
 }
 
 // Validate validates the config and returns implicit dependencies,
@@ -253,6 +284,17 @@ func (t *myTracker) Reconfigure(ctx context.Context, deps resource.Dependencies,
 	}
 	t.frequency = trackerConfig.MaxFrequency
 
+	//config trigger cool down
+	if trackerConfig.TriggerCoolDown != nil {
+		if *trackerConfig.TriggerCoolDown < 0 {
+			return errors.New("trigger_cool_down_s is a duration given in seconds and should be above 0.")
+		}
+		t.coolDown = *trackerConfig.TriggerCoolDown
+	} else {
+		t.coolDown = DefaultTriggerCoolDown
+	}
+
+	//config min confidence
 	if trackerConfig.MinConfidence != nil {
 		t.minConfidence = *trackerConfig.MinConfidence
 	} else {
@@ -310,12 +352,20 @@ func (t *myTracker) ClassificationsFromCamera(
 	n int,
 	extra map[string]interface{},
 ) (classification.Classifications, error) {
-	return nil, errUnimplemented
+	if cameraName != t.camName {
+		return nil, errors.Errorf("Camera name given to method, %v is not the same as configured camera %v", cameraName, t.camName)
+	}
+	if newInstance := t.newInstance.Load(); newInstance {
+		return []classification.Classification{classification.NewClassification(1, "triggered")}, nil
+	} else {
+		return []classification.Classification{classification.NewClassification(1, "empty")}, nil
+	}
 }
 
 func (t *myTracker) Classifications(ctx context.Context, img image.Image,
 	n int, extra map[string]interface{},
 ) (classification.Classifications, error) {
+
 	return nil, errUnimplemented
 }
 
@@ -337,6 +387,7 @@ func (t *myTracker) CaptureAllFromCamera(
 	extra map[string]interface{},
 ) (viscapture.VisCapture, error) {
 	var detections []objdet.Detection
+	var classifications []classification.Classification
 	var img image.Image
 	select {
 	case <-t.cancelContext.Done():
@@ -353,8 +404,15 @@ func (t *myTracker) CaptureAllFromCamera(
 		if opt.ReturnDetections {
 			detections = t.oldDetections.Load()[1]
 		}
+		if opt.ReturnClassifications {
+			if newInstance := t.newInstance.Load(); newInstance {
+				classifications = []classification.Classification{classification.NewClassification(1, "triggered")}
+			} else {
+				classifications = []classification.Classification{classification.NewClassification(1, "empty")}
+			}
+		}
 	}
-	return viscapture.VisCapture{Image: img, Detections: detections}, nil
+	return viscapture.VisCapture{Image: img, Detections: detections, Classifications: classifications}, nil
 }
 
 func (t *myTracker) Close(ctx context.Context) error {

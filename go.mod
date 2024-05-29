@@ -5,7 +5,7 @@ go 1.21.4
 require (
 	github.com/charles-haynes/munkres v0.0.0-20191008174651-55d467190535
 	github.com/pkg/errors v0.9.1
-	go.viam.com/rdk v0.17.0
+	go.viam.com/rdk v0.28.0
 	go.viam.com/utils v0.1.79
 )
 
@@ -151,4 +151,4 @@ require (
 	nhooyr.io/websocket v1.8.7 // indirect
 )
 
-replace go.viam.com/rdk => /Users/robinin/viamrobotics/rdk
+//replace go.viam.com/rdk => /Users/robinin/viamrobotics/rdk
