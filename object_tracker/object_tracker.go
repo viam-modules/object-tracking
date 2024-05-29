@@ -227,7 +227,6 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 			took := time.Since(start)
 			t.timeStats = append(t.timeStats, took)
 			waitFor := time.Duration((1/t.frequency)*float64(time.Second)) - took
-			t.timeStats = append(t.timeStats, took)
 			if waitFor > time.Microsecond {
 				select {
 				case <-cancelableCtx.Done():
