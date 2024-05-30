@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"go.viam.com/rdk/gostream"
 	"go.viam.com/rdk/vision/viscapture"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,7 +27,8 @@ import (
 
 // ModelName is the name of the model
 const (
-	ModelName = "object-tracker"
+	ModelName              = "object-tracker"
+	NewObjectDetectedLabel = "new-object-detected"
 )
 
 var (
@@ -34,12 +37,12 @@ var (
 	errUnimplemented       = errors.New("unimplemented")
 	DefaultMinConfidence   = 0.2
 	DefaultMaxFrequency    = 10.0
-	DefaultTriggerCoolDown = 10.0
+	DefaultTriggerCoolDown = 5.0
 )
 
-type allClassifications struct {
-	mutex sync.RWMutex
-	class []string
+type allObjects struct {
+	mutex   sync.RWMutex
+	objects []trackedObject
 }
 
 func init() {
@@ -61,7 +64,7 @@ type myTracker struct {
 	oldDetections           atomic.Pointer[[2][]objdet.Detection]
 	currImg                 atomic.Pointer[image.Image]
 
-	ac allClassifications
+	allFreshObjects allObjects
 
 	newInstance atomic.Bool
 	coolDown    float64
@@ -89,8 +92,8 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 			DetectionSupported:      true,
 			ObjectPCDsSupported:     false,
 		},
-		ac: allClassifications{
-			class: []string{},
+		allFreshObjects: allObjects{
+			objects: []trackedObject{},
 		},
 	}
 
@@ -140,6 +143,9 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 	matches := HA.Execute()
 	// Rename from temporal matches. New det copies old det's label
 	renamedNew, _ := t.RenameFromMatches(matches, renamedOld, filteredNew)
+	if len(renamedNew) > 0 {
+		t.trigger()
+	}
 	t.oldDetections.Store(&[2][]objdet.Detection{renamedOld, renamedNew})
 
 	t.activeBackgroundWorkers.Add(1)
@@ -184,44 +190,27 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 			HA, _ := hg.NewHungarianAlgorithm(matchMtx)
 			matches := HA.Execute()
 			// Rename from temporal matches. New det copies old det's label
-			curDets, newDets := t.RenameFromMatches(matches, namedOld, filteredNew)
-			if len(newDets) > 0 {
-				if t.triggerCancelFunc != nil {
-					t.triggerCancelFunc()
-				}
-				triggerContext, triggerCancelFunc := context.WithCancel(t.cancelContext)
-				t.triggerContext = triggerContext
-				t.triggerCancelFunc = triggerCancelFunc
-
-				t.newInstance.Store(true)
-				t.activeBackgroundWorkers.Add(1)
-
-				go func() {
-					coolDownTimer := time.After(time.Duration(t.coolDown * float64(time.Second)))
-					for {
-						select {
-						case <-coolDownTimer:
-							t.newInstance.Store(false)
-							t.activeBackgroundWorkers.Done()
-							return
-						case <-t.triggerContext.Done():
-							t.activeBackgroundWorkers.Done()
-							return
-						}
-					}
-				}()
+			renamedNew, freshDets := t.RenameFromMatches(matches, namedOld, filteredNew)
+			if len(freshDets) > 0 {
+				//trigger classification and schedule "untrigger"
+				t.trigger()
 
 				// add the detections to the logs
-				t.ac.mutex.Lock()
-				for _, det := range newDets {
-					label := det.Label()
-					t.ac.class = append(t.ac.class, label)
+				t.allFreshObjects.mutex.Lock()
+				for _, det := range freshDets {
+					to, err := newTrackedObjectFromLabel(det.Label())
+					if err != nil {
+						t.logger.Error(err)
+					}
+
+					//label := det.Label()
+					t.allFreshObjects.objects = append(t.allFreshObjects.objects, to)
 				}
-				t.ac.mutex.Unlock()
+				t.allFreshObjects.mutex.Unlock()
 			}
 
 			// Store the matched detections and image
-			t.oldDetections.Store(&[2][]objdet.Detection{namedOld, curDets})
+			t.oldDetections.Store(&[2][]objdet.Detection{namedOld, renamedNew})
 			t.currImg.Store(&img)
 
 			took := time.Since(start)
@@ -236,6 +225,33 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 			}
 		}
 	}
+}
+
+func (t *myTracker) trigger() {
+	if t.triggerCancelFunc != nil {
+		t.triggerCancelFunc()
+	}
+	triggerContext, triggerCancelFunc := context.WithCancel(t.cancelContext)
+	t.triggerContext = triggerContext
+	t.triggerCancelFunc = triggerCancelFunc
+
+	t.newInstance.Store(true)
+	t.activeBackgroundWorkers.Add(1)
+
+	viamutils.ManagedGo(
+		func() {
+			coolDownTimer := time.After(time.Duration(t.coolDown * float64(time.Second)))
+			select {
+			case <-coolDownTimer:
+				t.newInstance.Store(false)
+				return
+			case <-t.triggerContext.Done():
+				return
+			}
+		},
+		func() {
+			t.activeBackgroundWorkers.Done()
+		})
 }
 
 // Config contains names for necessary resources (camera and vision service)
@@ -355,9 +371,9 @@ func (t *myTracker) ClassificationsFromCamera(
 		return nil, errors.Errorf("Camera name given to method, %v is not the same as configured camera %v", cameraName, t.camName)
 	}
 	if newInstance := t.newInstance.Load(); newInstance {
-		return []classification.Classification{classification.NewClassification(1, "triggered")}, nil
+		return []classification.Classification{classification.NewClassification(1, NewObjectDetectedLabel)}, nil
 	} else {
-		return []classification.Classification{classification.NewClassification(1, "empty")}, nil
+		return []classification.Classification{}, nil
 	}
 }
 
@@ -405,9 +421,9 @@ func (t *myTracker) CaptureAllFromCamera(
 		}
 		if opt.ReturnClassifications {
 			if newInstance := t.newInstance.Load(); newInstance {
-				classifications = []classification.Classification{classification.NewClassification(1, "triggered")}
+				classifications = []classification.Classification{classification.NewClassification(1, NewObjectDetectedLabel)}
 			} else {
-				classifications = []classification.Classification{classification.NewClassification(1, "empty")}
+				classifications = []classification.Classification{}
 			}
 		}
 	}
@@ -418,6 +434,34 @@ func (t *myTracker) Close(ctx context.Context) error {
 	t.cancelFunc()
 	t.activeBackgroundWorkers.Wait()
 	return nil
+}
+
+type trackedObject struct {
+	FullLabel string
+	Label     string
+	Id        int
+	Time      string
+}
+type benchmark struct {
+	Slowest      float64
+	Fastest      float64
+	Average      float64
+	NumberOfRuns int
+}
+
+func newTrackedObjectFromLabel(label string) (trackedObject, error) {
+	parts := strings.Split(label, "_")
+	id, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return trackedObject{}, errors.Wrapf(err, "unable to parse label %v", label)
+	}
+	return trackedObject{
+		FullLabel: label,
+		Label:     parts[0],
+		Id:        id,
+		Time:      strings.Join(parts[2:], "_"),
+	}, nil
+
 }
 
 // DoCommand will return the slowest, fastest, and average time of the tracking module
@@ -438,16 +482,17 @@ func (t *myTracker) DoCommand(ctx context.Context, cmd map[string]interface{}) (
 			sum += tt
 		}
 		mean := time.Duration(int64(sum) / n)
-		out["slowest"] = fmt.Sprintf("%s", tmax)
-		out["fastest"] = fmt.Sprintf("%s", tmin)
-		out["average"] = fmt.Sprintf("%s", mean)
-		out["number of runs"] = fmt.Sprintf("%v", n)
-
+		out["benchmark"] = benchmark{
+			Slowest:      float64(tmax),
+			Fastest:      float64(tmin),
+			Average:      float64(mean),
+			NumberOfRuns: int(n),
+		}
 	}
-	if cmd["log_all"] != nil {
-		t.ac.mutex.RLock()
-		out["log"] = t.ac.class
-		t.ac.mutex.RUnlock()
+	if cmd["logs"] != nil {
+		t.allFreshObjects.mutex.RLock()
+		out["logs"] = t.allFreshObjects.objects
+		t.allFreshObjects.mutex.RUnlock()
 	}
 	return out, nil
 }

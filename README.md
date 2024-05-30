@@ -63,7 +63,7 @@ The following attributes are available for `viam:vision:object-tracker` vision s
 | `min_confidence` | float64 | **Optional** | A number between 0-1. Any detection with a confidence below this number will not be tracked. Default = 0.2                                                                                 |
 | `max_frequency_hz` | float64 | **Optional** | The fastest frequency (in Hz) that the model should run in. Default = 10.                                                                                                                  |
 | `chosen_labels` | map[string]float64 | **Optional** | A list of class names (string) and confidence scores (float[0-1]) such that **only** detections with a class name in the list and a confidence above the corresponding score are included. |
-| `trigger_cool_down_s` | float64 | **Optional** | The duration (in seconds) before the trigger goes back to `empty`. Default = 10.                                                                                                             |                                                                                                         |
+| `trigger_cool_down_s` | float64 | **Optional** | The duration (in seconds) before the trigger goes back to `empty`. Default = 5.                                                                                                            |                                                                                                         |
 ### Usage
 
 This module is made for use with the following methods of the [vision service API](https://docs.viam.com/services/vision/#api): 
