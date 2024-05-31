@@ -56,19 +56,23 @@ Navigate to the **Config** tab of your robot’s page in [the Viam app](https://
 
 The following attributes are available for `viam:vision:object-tracker` vision services:
 
-| Name | Type | Inclusion | Description |
-| ---- | ---- | --------- | ----------- |
-| `camera_name` | string | **Required** | The name of the camera configured on your robot. |
-| `detector_name` | string | **Required** | The name of the detector (vision service) configured on your robot. |
-| `min_confidence` | float64 | **Optional** | A number between 0-1. Any detection with a confidence below this number will not be tracked. Default = 0.2 |
-| `max_frequency_hz` | float64 | **Optional** | The fastest frequency (in Hz) that the model should run in. Default = 10. |
-| `chosen_labels` | map[string]float64 | **Optional** |  A list of class names (string) and confidence scores (float[0-1]) such that **only** detections with a class name in the list and a confidence above the corresponding score are included. |
-
+| Name | Type | Inclusion | Description                                                                                                                                                                                |
+| ---- | ---- | --------- |--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `camera_name` | string | **Required** | The name of the camera configured on your robot.                                                                                                                                           |
+| `detector_name` | string | **Required** | The name of the detector (vision service) configured on your robot.                                                                                                                        |
+| `min_confidence` | float64 | **Optional** | A number between 0-1. Any detection with a confidence below this number will not be tracked. Default = 0.2                                                                                 |
+| `max_frequency_hz` | float64 | **Optional** | The fastest frequency (in Hz) that the model should run in. Default = 10.                                                                                                                  |
+| `chosen_labels` | map[string]float64 | **Optional** | A list of class names (string) and confidence scores (float[0-1]) such that **only** detections with a class name in the list and a confidence above the corresponding score are included. |
+| `trigger_cool_down_s` | float64 | **Optional** | The duration (in seconds) before the trigger goes back to `empty`. Default = 5.                                                                                                            |                                                                                                         |
 ### Usage
 
 This module is made for use with the following methods of the [vision service API](https://docs.viam.com/services/vision/#api): 
+- `GetProperties()`
 - [`GetDetections()`](https://docs.viam.com/services/vision/#getdetections)
 - [`GetDetectionsFromCamera()`](https://docs.viam.com/services/vision/#getdetectionsfromcamera)
+- [`GetClassificationsFromCamera()`](https://docs.viam.com/services/vision/#getclassificationsfromcamera)
+- `CaptureAll()`
+- `DoCommand()`
 
 
 The module will return a list of detections. The bounding box and `confidence` of each detection will be as detected by the underlying detector that was passed to the object-tracking module.  The new `class_name` will be: "< old `class_name`>_N_YYYYMMDD_HHMMSS", where the object is the Nth of it's class and was originally seen at the time/date indicated by YYYYMMDD_HHMMSS.
