@@ -380,8 +380,11 @@ func (t *myTracker) ClassificationsFromCamera(
 func (t *myTracker) Classifications(ctx context.Context, img image.Image,
 	n int, extra map[string]interface{},
 ) (classification.Classifications, error) {
-
-	return nil, errUnimplemented
+	if newInstance := t.newInstance.Load(); newInstance {
+		return []classification.Classification{classification.NewClassification(1, NewObjectDetectedLabel)}, nil
+	} else {
+		return []classification.Classification{}, nil
+	}
 }
 
 func (t *myTracker) GetProperties(ctx context.Context, extra map[string]interface{}) (*vision.Properties, error) {
