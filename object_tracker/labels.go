@@ -27,7 +27,7 @@ func ReplaceLabel(det objdet.Detection, label string) objdet.Detection {
 // gives the new detection the same label as the matching old detection.  Any new detections
 // found will be given a new name (and class counter will be updated)
 // Also return freshDets that are the fresh detections that were not matched with any detections in the previous frame.
-func (t *myTracker) RenameFromMatches(matches []int, oldDets, newDets []objdet.Detection) ([]objdet.Detection, []objdet.Detection) {
+func (t *myTracker) RenameFromMatches(matches []int, matchinMtx [][]float64, oldDets, newDets []objdet.Detection) ([]objdet.Detection, []objdet.Detection) {
 	// Fill up a map with the indices of newDetections we have
 	notUsed := make(map[int]struct{})
 	for i, _ := range newDets {
@@ -36,19 +36,19 @@ func (t *myTracker) RenameFromMatches(matches []int, oldDets, newDets []objdet.D
 	// Go through valid matches and update name and track
 	for oldIdx, newIdx := range matches {
 		if newIdx != -1 {
-			newDets[newIdx] = ReplaceLabel(newDets[newIdx], oldDets[oldIdx].Label())
-			t.UpdateTrack(newDets[newIdx])
-			delete(notUsed, newIdx)
+			if matchinMtx[oldIdx][newIdx] != 0 {
+				newDets[newIdx] = ReplaceLabel(newDets[newIdx], oldDets[oldIdx].Label())
+				t.UpdateTrack(newDets[newIdx])
+				delete(notUsed, newIdx)
+			}
 		}
 	}
 	// Go through all NEW things and add them in (name them and start new track)
 	var freshDets []objdet.Detection
-	if len(newDets) > len(matches) {
-		for idx := range notUsed {
-			newDet := t.RenameFirstTime(newDets[idx])
-			newDets[idx] = newDet
-			freshDets = append(freshDets, newDet)
-		}
+	for idx := range notUsed {
+		newDet := t.RenameFirstTime(newDets[idx])
+		newDets[idx] = newDet
+		freshDets = append(freshDets, newDet)
 	}
 	return newDets, freshDets
 }

@@ -142,7 +142,7 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 	}
 	matches := HA.Execute()
 	// Rename from temporal matches. New det copies old det's label
-	renamedNew, _ := t.RenameFromMatches(matches, renamedOld, filteredNew)
+	renamedNew, _ := t.RenameFromMatches(matches, matchMtx, renamedOld, filteredNew)
 	if len(renamedNew) > 0 {
 		t.trigger()
 	}
@@ -190,7 +190,7 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 			HA, _ := hg.NewHungarianAlgorithm(matchMtx)
 			matches := HA.Execute()
 			// Rename from temporal matches. New det copies old det's label
-			renamedNew, freshDets := t.RenameFromMatches(matches, namedOld, filteredNew)
+			renamedNew, freshDets := t.RenameFromMatches(matches, matchMtx, namedOld, filteredNew)
 			if len(freshDets) > 0 {
 				//trigger classification and schedule "untrigger"
 				t.trigger()
