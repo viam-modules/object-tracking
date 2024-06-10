@@ -38,11 +38,17 @@ var (
 	DefaultMinConfidence   = 0.2
 	DefaultMaxFrequency    = 10.0
 	DefaultTriggerCoolDown = 5.0
+	DefaultBufferSize      = 30
 )
 
 type allObjects struct {
 	mutex   sync.RWMutex
 	objects []trackedObject
+}
+
+type currentDetections struct {
+	mutex      sync.RWMutex
+	detections []objdet.Detection
 }
 
 func init() {
@@ -61,8 +67,10 @@ type myTracker struct {
 	triggerContext    context.Context
 
 	activeBackgroundWorkers sync.WaitGroup
-	oldDetections           atomic.Pointer[[2][]objdet.Detection]
+	lastDetections          []objdet.Detection
+	currDetections          currentDetections
 	currImg                 atomic.Pointer[image.Image]
+	lostDetectionsBuffer    *detectionsBuffer
 
 	allFreshObjects allObjects
 
@@ -95,11 +103,15 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 		allFreshObjects: allObjects{
 			objects: []trackedObject{},
 		},
+		currDetections: currentDetections{},
 	}
 
 	if err := t.Reconfigure(ctx, deps, conf); err != nil {
 		return nil, err
 	}
+
+	t.logger.Errorf("Got config: %+v", conf)
+	t.logger.Errorf("And buffer size: %d", t.lostDetectionsBuffer.size)
 	// Default value for frequency = 10Hz
 	if t.frequency == 0 {
 		t.frequency = DefaultMaxFrequency
@@ -141,12 +153,23 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 		return nil, err
 	}
 	matches := HA.Execute()
+	var lostDetections []objdet.Detection
+	for idx, _ := range matches {
+		if matches[idx] == -1 {
+			lostDetections = append(lostDetections, renamedOld[idx])
+		}
+	}
+	t.lostDetectionsBuffer.AppendDets(lostDetections)
+
 	// Rename from temporal matches. New det copies old det's label
 	renamedNew, _ := t.RenameFromMatches(matches, matchMtx, renamedOld, filteredNew)
 	if len(renamedNew) > 0 {
 		t.trigger()
 	}
-	t.oldDetections.Store(&[2][]objdet.Detection{renamedOld, renamedNew})
+	t.lastDetections = renamedNew
+	t.currDetections.mutex.Lock()
+	t.currDetections.detections = renamedNew
+	t.currDetections.mutex.Unlock()
 
 	t.activeBackgroundWorkers.Add(1)
 	viamutils.ManagedGo(func() {
@@ -169,9 +192,6 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 			return
 		default:
 			start := time.Now()
-			// Load up the old detections
-			namedOld := t.oldDetections.Load()[1]
-
 			// Take fresh detections from fresh image
 			img, _, err := stream.Next(cancelableCtx)
 			if err != nil {
@@ -185,12 +205,27 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 			}
 			filteredNew := FilterDetections(t.chosenLabels, detections, t.minConfidence)
 
+			// Store oldDetection and lost detections in allDetections
+			allDetections := t.lastDetections
+			for _, dets := range t.lostDetectionsBuffer.detections {
+				for _, det := range dets {
+					allDetections = append(allDetections, det)
+				}
+			}
 			// Build and solve cost matrix via Munkres' method
-			matchMtx := t.BuildMatchingMatrix(namedOld, filteredNew)
+			matchMtx := t.BuildMatchingMatrix(allDetections, filteredNew)
 			HA, _ := hg.NewHungarianAlgorithm(matchMtx)
 			matches := HA.Execute()
+			// Store the lost detections in the buffer
+			var lostDetections []objdet.Detection
+			for idx, _ := range t.lastDetections {
+				if matches[idx] == -1 {
+					lostDetections = append(lostDetections, t.lastDetections[idx])
+				}
+			}
+			t.lostDetectionsBuffer.AppendDets(lostDetections)
 			// Rename from temporal matches. New det copies old det's label
-			renamedNew, freshDets := t.RenameFromMatches(matches, matchMtx, namedOld, filteredNew)
+			renamedNew, freshDets := t.RenameFromMatches(matches, matchMtx, allDetections, filteredNew)
 			if len(freshDets) > 0 {
 				//trigger classification and schedule "untrigger"
 				t.trigger()
@@ -202,15 +237,14 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 					if err != nil {
 						t.logger.Error(err)
 					}
-
-					//label := det.Label()
 					t.allFreshObjects.objects = append(t.allFreshObjects.objects, to)
 				}
 				t.allFreshObjects.mutex.Unlock()
 			}
-
-			// Store the matched detections and image
-			t.oldDetections.Store(&[2][]objdet.Detection{namedOld, renamedNew})
+			t.lastDetections = renamedNew
+			t.currDetections.mutex.Lock()
+			t.currDetections.detections = renamedNew
+			t.currDetections.mutex.Unlock()
 			t.currImg.Store(&img)
 
 			took := time.Since(start)
@@ -262,6 +296,7 @@ type Config struct {
 	MaxFrequency    float64            `json:"max_frequency_hz"`
 	MinConfidence   *float64           `json:"min_confidence,omitempty"`
 	TriggerCoolDown *float64           `json:"trigger_cool_down_s,omitempty"`
+	BufferSize      int                `json:"buffer_size,omitempty"`
 }
 
 // Validate validates the config and returns implicit dependencies,
@@ -298,6 +333,16 @@ func (t *myTracker) Reconfigure(ctx context.Context, deps resource.Dependencies,
 		return errors.New("frequency(Hz) must be a positive number")
 	}
 	t.frequency = trackerConfig.MaxFrequency
+
+	//config buffer size
+	if trackerConfig.BufferSize > 0 {
+		if trackerConfig.BufferSize > 256 {
+			return errors.New("buffer size must be between 1 and 256")
+		}
+		t.lostDetectionsBuffer = newDetectionsBuffer(trackerConfig.BufferSize)
+	} else {
+		t.lostDetectionsBuffer = newDetectionsBuffer(DefaultBufferSize)
+	}
 
 	//config trigger cool down
 	if trackerConfig.TriggerCoolDown != nil {
@@ -346,7 +391,10 @@ func (t *myTracker) DetectionsFromCamera(
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	default:
-		return t.oldDetections.Load()[1], nil
+		t.currDetections.mutex.RLock()
+		dets := t.currDetections.detections
+		t.currDetections.mutex.RUnlock()
+		return dets, nil
 	}
 }
 
@@ -357,7 +405,10 @@ func (t *myTracker) Detections(ctx context.Context, img image.Image, extra map[s
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	default:
-		return t.oldDetections.Load()[1], nil
+		t.currDetections.mutex.RLock()
+		dets := t.currDetections.detections
+		t.currDetections.mutex.RUnlock()
+		return dets, nil
 	}
 }
 
@@ -420,7 +471,9 @@ func (t *myTracker) CaptureAllFromCamera(
 			img = *t.currImg.Load()
 		}
 		if opt.ReturnDetections {
-			detections = t.oldDetections.Load()[1]
+			t.currDetections.mutex.RLock()
+			detections = t.currDetections.detections
+			t.currDetections.mutex.RUnlock()
 		}
 		if opt.ReturnClassifications {
 			if newInstance := t.newInstance.Load(); newInstance {
@@ -498,4 +551,39 @@ func (t *myTracker) DoCommand(ctx context.Context, cmd map[string]interface{}) (
 		t.allFreshObjects.mutex.RUnlock()
 	}
 	return out, nil
+}
+
+type detectionsBuffer struct {
+	detections [][]objdet.Detection
+	size       int
+}
+
+// newDetectionsBuffer initializes a new fixed-length queue with the specified size.
+func newDetectionsBuffer(size int) *detectionsBuffer {
+	return &detectionsBuffer{
+		detections: make([][]objdet.Detection, 0, size),
+		size:       size,
+	}
+}
+func (b *detectionsBuffer) AppendDets(newDets []objdet.Detection) {
+	if len(b.detections) == b.size {
+		b.detections = b.detections[1:]
+	}
+
+	//remove old dets to match new dets only on the most recent detections
+	for _, newDet := range newDets {
+		countLabel := strings.Join(strings.Split(newDet.Label(), "_")[0:2], "_")
+		for i := range b.detections {
+			dets := b.detections[i]
+			for idx, det := range dets {
+				oldCountLabel := strings.Join(strings.Split(det.Label(), "_")[0:2], "_")
+				if countLabel == oldCountLabel {
+					b.detections[i] = append(dets[:idx], dets[idx+1:]...)
+					break
+				}
+			}
+		}
+	}
+
+	b.detections = append(b.detections, newDets)
 }

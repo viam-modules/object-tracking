@@ -25,7 +25,7 @@ func ReplaceLabel(det objdet.Detection, label string) objdet.Detection {
 
 // RenameFromMatches takes the output of the Hungarian matching algorithm and
 // gives the new detection the same label as the matching old detection.  Any new detections
-// found will be given a new name (and class counter will be updated)
+// found will be given a new name (and cleass counter will be updated)
 // Also return freshDets that are the fresh detections that were not matched with any detections in the previous frame.
 func (t *myTracker) RenameFromMatches(matches []int, matchinMtx [][]float64, oldDets, newDets []objdet.Detection) ([]objdet.Detection, []objdet.Detection) {
 	// Fill up a map with the indices of newDetections we have

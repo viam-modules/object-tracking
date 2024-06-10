@@ -56,14 +56,15 @@ Navigate to the **Config** tab of your robot’s page in [the Viam app](https://
 
 The following attributes are available for `viam:vision:object-tracker` vision services:
 
-| Name | Type | Inclusion | Description                                                                                                                                                                                |
-| ---- | ---- | --------- |--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `camera_name` | string | **Required** | The name of the camera configured on your robot.                                                                                                                                           |
-| `detector_name` | string | **Required** | The name of the detector (vision service) configured on your robot.                                                                                                                        |
-| `min_confidence` | float64 | **Optional** | A number between 0-1. Any detection with a confidence below this number will not be tracked. Default = 0.2                                                                                 |
-| `max_frequency_hz` | float64 | **Optional** | The fastest frequency (in Hz) that the model should run in. Default = 10.                                                                                                                  |
-| `chosen_labels` | map[string]float64 | **Optional** | A list of class names (string) and confidence scores (float[0-1]) such that **only** detections with a class name in the list and a confidence above the corresponding score are included. |
-| `trigger_cool_down_s` | float64 | **Optional** | The duration (in seconds) before the trigger goes back to `empty`. Default = 5.                                                                                                            |                                                                                                         |
+| Name                  | Type               | Inclusion | Description                                                                                                                                                                                |
+|-----------------------|--------------------| --------- |--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `camera_name`         | string             | **Required** | The name of the camera configured on your robot.                                                                                                                                           |
+| `detector_name`       | string             | **Required** | The name of the detector (vision service) configured on your robot.                                                                                                                        |
+| `min_confidence`      | float64            | **Optional** | A number between 0-1. Any detection with a confidence below this number will not be tracked. Default = 0.2                                                                                 |
+| `max_frequency_hz`    | float64            | **Optional** | The fastest frequency (in Hz) that the model should run in. Default = 10.                                                                                                                  |
+| `chosen_labels`       | map[string]float64 | **Optional** | A list of class names (string) and confidence scores (float[0-1]) such that **only** detections with a class name in the list and a confidence above the corresponding score are included. |
+| `trigger_cool_down_s` | float64            | **Optional** | The duration (in seconds) before the trigger goes back to `empty`. Default = 5.                                                                                                            |
+| `buffer_size`         | int                | **Optional** | SIze of the buffer that stores lost bounding boxes. Default = 30. Min = 1. Max = 256.                                                                                                      |
 ### Usage
 
 This module is made for use with the following methods of the [vision service API](https://docs.viam.com/services/vision/#api): 
