@@ -140,7 +140,7 @@ func TestTracker(t *testing.T) {
 
 	//Detecting a new cat, now we want to make sure that we don't have 2 "fish_zero"
 	//when fish get lost
-	filteredNew = fd.fakeDetections() //get fish but somewhere else
+	filteredNew = fd.fakeDetections() //get cat again
 	test.That(t, len(filteredNew), test.ShouldEqual, 1)
 	checkLabel(t, filteredNew[0], LabelDet0)
 
