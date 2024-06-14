@@ -37,9 +37,11 @@ func (t *myTracker) RenameFromMatches(matches []int, matchinMtx [][]float64, old
 	for oldIdx, newIdx := range matches {
 		if newIdx != -1 {
 			if matchinMtx[oldIdx][newIdx] != 0 {
-				newDets[newIdx] = ReplaceLabel(newDets[newIdx], oldDets[oldIdx].Label())
-				t.UpdateTrack(newDets[newIdx])
-				delete(notUsed, newIdx)
+				if newIdx >= 0 && newIdx < len(newDets) && oldIdx >= 0 && oldIdx < len(oldDets) {
+					newDets[newIdx] = ReplaceLabel(newDets[newIdx], oldDets[oldIdx].Label())
+					t.UpdateTrack(newDets[newIdx])
+					delete(notUsed, newIdx)
+				}
 			}
 		}
 	}
