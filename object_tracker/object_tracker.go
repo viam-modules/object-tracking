@@ -109,9 +109,7 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 	if err := t.Reconfigure(ctx, deps, conf); err != nil {
 		return nil, err
 	}
-
-	t.logger.Errorf("Got config: %+v", conf)
-	t.logger.Errorf("And buffer size: %d", t.lostDetectionsBuffer.size)
+	
 	// Default value for frequency = 10Hz
 	if t.frequency == 0 {
 		t.frequency = DefaultMaxFrequency
