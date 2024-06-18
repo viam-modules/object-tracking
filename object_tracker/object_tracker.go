@@ -197,7 +197,7 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 				continue
 			}
 			if img == nil {
-				t.logger.Errorf("GOT NIL IMAGE")
+				t.logger.Errorf("got nil image")
 				continue
 			}
 			detections, err := t.detector.Detections(cancelableCtx, img, nil)
