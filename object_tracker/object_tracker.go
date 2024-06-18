@@ -109,7 +109,7 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 	if err := t.Reconfigure(ctx, deps, conf); err != nil {
 		return nil, err
 	}
-	
+
 	// Default value for frequency = 10Hz
 	if t.frequency == 0 {
 		t.frequency = DefaultMaxFrequency
@@ -193,13 +193,17 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 			// Take fresh detections from fresh image
 			img, _, err := stream.Next(cancelableCtx)
 			if err != nil {
-				t.logger.Error(err)
-				return
+				t.logger.Errorf("can't get image. got err: %s", err)
+				continue
+			}
+			if img == nil {
+				t.logger.Errorf("got nil image")
+				continue
 			}
 			detections, err := t.detector.Detections(cancelableCtx, img, nil)
 			if err != nil {
-				t.logger.Error(err)
-				return
+				t.logger.Errorf("can't get detections. got err: %s", err)
+				continue
 			}
 			filteredNew := FilterDetections(t.chosenLabels, detections, t.minConfidence)
 
