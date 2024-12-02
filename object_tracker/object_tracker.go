@@ -4,13 +4,16 @@ package object_tracker
 import (
 	"context"
 	"fmt"
-	"go.viam.com/rdk/gostream"
-	"go.viam.com/rdk/vision/viscapture"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"go.viam.com/rdk/gostream"
+	"go.viam.com/rdk/vision/viscapture"
+
+	"image"
 
 	hg "github.com/charles-haynes/munkres"
 	"github.com/pkg/errors"
@@ -22,7 +25,6 @@ import (
 	"go.viam.com/rdk/vision/classification"
 	objdet "go.viam.com/rdk/vision/objectdetection"
 	viamutils "go.viam.com/utils"
-	"image"
 )
 
 // ModelName is the name of the model
@@ -190,6 +192,13 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 			return
 		default:
 			start := time.Now()
+
+			// Check the time and see if the day changed (midnight). If so, reset classCounter
+			h, m, s := start.Hour(), start.Minute(), start.Second()
+			if h == 0 && m == 0 && s == 0 { 
+				t.classCounter = make(map[string]int)
+			}
+
 			// Take fresh detections from fresh image
 			img, _, err := stream.Next(cancelableCtx)
 			if err != nil {
@@ -210,9 +219,7 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 			// Store oldDetection and lost detections in allDetections
 			allDetections := t.lastDetections
 			for _, dets := range t.lostDetectionsBuffer.detections {
-				for _, det := range dets {
-					allDetections = append(allDetections, det)
-				}
+				allDetections = append(allDetections, dets...)
 			}
 			// Build and solve cost matrix via Munkres' method
 			matchMtx := t.BuildMatchingMatrix(allDetections, filteredNew)
