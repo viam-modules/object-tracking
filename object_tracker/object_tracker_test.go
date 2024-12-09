@@ -1,12 +1,13 @@
 package object_tracker
 
 import (
+	"image"
+	"testing"
+
 	hg "github.com/charles-haynes/munkres"
 	"go.viam.com/rdk/services/vision"
 	objdet "go.viam.com/rdk/vision/objectdetection"
 	"go.viam.com/test"
-	"image"
-	"testing"
 )
 
 const (
@@ -102,9 +103,7 @@ func TestTracker(t *testing.T) {
 	// Store oldDetection and lost detections in allDetections
 	allDetections := fakeTracker.lastDetections
 	for _, dets := range fakeTracker.lostDetectionsBuffer.detections {
-		for _, det := range dets {
-			allDetections = append(allDetections, det)
-		}
+		allDetections = append(allDetections, dets...)
 	}
 
 	// Build and solve cost matrix via Munkres' method
@@ -147,9 +146,7 @@ func TestTracker(t *testing.T) {
 	// Store oldDetection and lost detections in allDetections
 	allDetections = fakeTracker.lastDetections
 	for _, dets := range fakeTracker.lostDetectionsBuffer.detections {
-		for _, det := range dets {
-			allDetections = append(allDetections, det)
-		}
+		allDetections = append(allDetections, dets...)
 	}
 
 	// Build and solve cost matrix via Munkres' method
