@@ -4,26 +4,24 @@ package object_tracker
 import (
 	"context"
 	"fmt"
+	"image"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"go.viam.com/rdk/gostream"
-	"go.viam.com/rdk/vision/viscapture"
-
-	"image"
-
 	hg "github.com/charles-haynes/munkres"
 	"github.com/pkg/errors"
 	"go.viam.com/rdk/components/camera"
+	"go.viam.com/rdk/gostream"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/resource"
 	"go.viam.com/rdk/services/vision"
 	vis "go.viam.com/rdk/vision"
 	"go.viam.com/rdk/vision/classification"
 	objdet "go.viam.com/rdk/vision/objectdetection"
+	"go.viam.com/rdk/vision/viscapture"
 	viamutils "go.viam.com/utils"
 )
 
