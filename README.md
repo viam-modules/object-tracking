@@ -64,7 +64,8 @@ The following attributes are available for `viam:vision:object-tracker` vision s
 | `max_frequency_hz`    | float64            | **Optional** | The fastest frequency (in Hz) that the model should run in. Default = 10.                                                                                                                  |
 | `chosen_labels`       | map[string]float64 | **Optional** | A list of class names (string) and confidence scores (float[0-1]) such that **only** detections with a class name in the list and a confidence above the corresponding score are included. |
 | `trigger_cool_down_s` | float64            | **Optional** | The duration (in seconds) before the trigger goes back to `empty`. Default = 5.                                                                                                            |
-| `buffer_size`         | int                | **Optional** | SIze of the buffer that stores lost bounding boxes. Default = 30. Min = 1. Max = 256.                                                                                                      |
+| `buffer_size`         | int                | **Optional** | Size of the buffer that stores lost bounding boxes. Default = 30. Min = 1. Max = 256.                                                                                                      |
+| `reset_time`          | string             | **Optional** | The time, written "HH:MM:SS", at which to restart the tracker's class counter. Default = "00:00:00" (midnight)                                                                             |
 ### Usage
 
 This module is made for use with the following methods of the [vision service API](https://docs.viam.com/services/vision/#api): 
