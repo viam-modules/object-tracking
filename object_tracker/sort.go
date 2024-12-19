@@ -2,7 +2,6 @@
 package object_tracker
 
 import (
-	objdet "go.viam.com/rdk/vision/objectdetection"
 	"image"
 	"strings"
 )
@@ -34,23 +33,26 @@ func PredictNextFrame(old, curr image.Rectangle) image.Rectangle {
 // BuildMatchingMatrix sets up a cost matrix for the Hungarian algorithm.
 // We compare the predicted location (if enough track info available) to detected location
 // In this implementation, cost is -IOU between bboxes (b/c solver will find min)
-func (t *myTracker) BuildMatchingMatrix(oldDetections, newDetections []objdet.Detection) [][]float64 {
+func (t *myTracker) BuildMatchingMatrix(oldDetections, newDetections []*track) [][]float64 {
 	h, w := len(oldDetections), len(newDetections)
 	matchMtx := make([][]float64, h)
 
 	for i, oldD := range oldDetections {
 		row := make([]float64, w)
 		// Find track. If long enough, make prediction and use that. Otherwise use self
-		label := strings.Join(strings.Split(oldD.Label(), "_")[0:2], "_")
+		label := strings.Join(strings.Split(oldD.Det.Label(), "_")[0:2], "_")
 		track := t.tracks[label]
 		if len(track) >= 2 {
-			pred := PredictNextFrame(*track[len(track)-2].BoundingBox(), *track[len(track)-1].BoundingBox())
+			pred := PredictNextFrame(
+				*track[len(track)-2].Det.BoundingBox(),
+				*track[len(track)-1].Det.BoundingBox(),
+			)
 			for j, newD := range newDetections {
-				row[j] = -IOU(&pred, newD.BoundingBox())
+				row[j] = -IOU(&pred, newD.Det.BoundingBox())
 			}
 		} else {
 			for j, newD := range newDetections {
-				row[j] = -IOU(oldD.BoundingBox(), newD.BoundingBox())
+				row[j] = -IOU(oldD.Det.BoundingBox(), newD.Det.BoundingBox())
 			}
 		}
 		matchMtx[i] = row
