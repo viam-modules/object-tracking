@@ -4,13 +4,15 @@ package object_tracker
 import (
 	"context"
 	"fmt"
-	"go.viam.com/rdk/gostream"
-	"go.viam.com/rdk/vision/viscapture"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"go.viam.com/rdk/gostream"
+	"go.viam.com/rdk/vision/viscapture"
+
+	"image"
 
 	hg "github.com/charles-haynes/munkres"
 	"github.com/pkg/errors"
@@ -22,7 +24,6 @@ import (
 	"go.viam.com/rdk/vision/classification"
 	objdet "go.viam.com/rdk/vision/objectdetection"
 	viamutils "go.viam.com/utils"
-	"image"
 )
 
 // ModelName is the name of the model
@@ -32,13 +33,14 @@ const (
 )
 
 var (
-	// Here is where we define your new model's colon-delimited-triplet (viam:vision:object-tracker)
-	Model                  = resource.NewModel("viam", "vision", ModelName)
-	errUnimplemented       = errors.New("unimplemented")
-	DefaultMinConfidence   = 0.2
-	DefaultMaxFrequency    = 10.0
-	DefaultTriggerCoolDown = 5.0
-	DefaultBufferSize      = 30
+	// Here is where we define your new model's colon-delimited-triplet
+	Model                      = resource.NewModel("viam", "vision", ModelName)
+	errUnimplemented           = errors.New("unimplemented")
+	DefaultMinTrackPersistence = 3
+	DefaultMinConfidence       = 0.2
+	DefaultMaxFrequency        = 10.0
+	DefaultTriggerCoolDown     = 5.0
+	DefaultBufferSize          = 30
 )
 
 type allObjects struct {
@@ -48,7 +50,7 @@ type allObjects struct {
 
 type currentDetections struct {
 	mutex      sync.RWMutex
-	detections []objdet.Detection
+	detections []*track
 }
 
 func init() {
@@ -67,10 +69,10 @@ type myTracker struct {
 	triggerContext    context.Context
 
 	activeBackgroundWorkers sync.WaitGroup
-	lastDetections          []objdet.Detection
+	lastDetections          []*track
 	currDetections          currentDetections
 	currImg                 atomic.Pointer[image.Image]
-	lostDetectionsBuffer    *detectionsBuffer
+	lostDetectionsBuffer    *tracksBuffer
 
 	allFreshObjects allObjects
 
@@ -78,15 +80,16 @@ type myTracker struct {
 	coolDown    float64
 	properties  vision.Properties
 
-	cam           camera.Camera
-	camName       string
-	detector      vision.Service
-	frequency     float64
-	minConfidence float64
-	chosenLabels  map[string]float64
-	classCounter  map[string]int
-	tracks        map[string][]objdet.Detection
-	timeStats     []time.Duration
+	cam                 camera.Camera
+	camName             string
+	detector            vision.Service
+	frequency           float64
+	minConfidence       float64
+	chosenLabels        map[string]float64
+	classCounter        map[string]int
+	tracks              map[string][]*track
+	timeStats           []time.Duration
+	minTrackPersistence int
 }
 
 func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.Config, logger logging.Logger) (vision.Service, error) {
@@ -94,7 +97,7 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 		Named:        conf.ResourceName().AsNamed(),
 		logger:       logger,
 		classCounter: make(map[string]int),
-		tracks:       make(map[string][]objdet.Detection),
+		tracks:       make(map[string][]*track),
 		properties: vision.Properties{
 			ClassificationSupported: true,
 			DetectionSupported:      true,
@@ -110,6 +113,10 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 		return nil, err
 	}
 
+	//Default value for persistence
+	if t.minTrackPersistence == 0 {
+		t.minTrackPersistence = DefaultMinTrackPersistence
+	}
 	// Default value for frequency = 10Hz
 	if t.frequency == 0 {
 		t.frequency = DefaultMaxFrequency
@@ -120,7 +127,7 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 	t.cancelContext = cancelableCtx
 
 	// Do the first pass to populate the first set of 2 detections.
-	starterDets := make([][]objdet.Detection, 2)
+	starterDets := make([][]*track, 2)
 	stream, err := t.cam.Stream(t.cancelContext, nil)
 	if err != nil {
 		return nil, err
@@ -134,12 +141,14 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 		if err != nil {
 			return nil, err
 		}
-		starterDets[i] = detections
+		filteredDets := FilterDetections(t.chosenLabels, detections, t.minConfidence)
+		tracks := newTracks(filteredDets, t.minTrackPersistence)
+		starterDets[i] = tracks
 	}
-	filteredOld := FilterDetections(t.chosenLabels, starterDets[0], t.minConfidence)
-	filteredNew := FilterDetections(t.chosenLabels, starterDets[1], t.minConfidence)
+	filteredOld := starterDets[0]
+	filteredNew := starterDets[1]
 	// Rename (from scratch)
-	renamedOld := make([]objdet.Detection, 0, len(filteredOld))
+	renamedOld := make([]*track, 0, len(filteredOld))
 	for _, det := range filteredOld {
 		newDet := t.RenameFirstTime(det)
 		renamedOld = append(renamedOld, newDet)
@@ -151,19 +160,23 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 		return nil, err
 	}
 	matches := HA.Execute()
-	var lostDetections []objdet.Detection
+	var lostDetections []*track
 	for idx, _ := range matches {
 		if matches[idx] == -1 {
-			lostDetections = append(lostDetections, renamedOld[idx])
+			// if lost detection is not stable, discard it
+			if renamedOld[idx].isStable() {
+				lostDetections = append(lostDetections, renamedOld[idx])
+			}
 		}
 	}
 	t.lostDetectionsBuffer.AppendDets(lostDetections)
 
 	// Rename from temporal matches. New det copies old det's label
-	renamedNew, _ := t.RenameFromMatches(matches, matchMtx, renamedOld, filteredNew)
-	if len(renamedNew) > 0 {
+	renamedNew, newlyStable, _ := t.RenameFromMatches(matches, matchMtx, renamedOld, filteredNew)
+	if len(newlyStable) > 0 {
 		t.trigger()
 	}
+	renamedNew = append(renamedNew, newlyStable...)
 	t.lastDetections = renamedNew
 	t.currDetections.mutex.Lock()
 	t.currDetections.detections = renamedNew
@@ -205,37 +218,45 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 				t.logger.Errorf("can't get detections. got err: %s", err)
 				continue
 			}
-			filteredNew := FilterDetections(t.chosenLabels, detections, t.minConfidence)
+			filteredDets := FilterDetections(t.chosenLabels, detections, t.minConfidence)
+			// all new tracks get a fresh persistence counter
+			filteredNew := newTracks(filteredDets, t.minTrackPersistence)
 
 			// Store oldDetection and lost detections in allDetections
 			allDetections := t.lastDetections
 			for _, dets := range t.lostDetectionsBuffer.detections {
-				for _, det := range dets {
-					allDetections = append(allDetections, det)
-				}
+				allDetections = append(allDetections, dets...)
 			}
 			// Build and solve cost matrix via Munkres' method
 			matchMtx := t.BuildMatchingMatrix(allDetections, filteredNew)
 			HA, _ := hg.NewHungarianAlgorithm(matchMtx)
 			matches := HA.Execute()
-			// Store the lost detections in the buffer
-			var lostDetections []objdet.Detection
+			// Store the lost detections in the buffer, drop lost detections
+			// if they were not considered stable
+			var lostDetections []*track
 			for idx, _ := range t.lastDetections {
 				if matches[idx] == -1 {
-					lostDetections = append(lostDetections, t.lastDetections[idx])
+					if t.lastDetections[idx].isStable() {
+						lostDetections = append(lostDetections, t.lastDetections[idx])
+					} else {
+						// drop lost detections from track list as well
+						countLabel := getTrackingLabel(t.lastDetections[idx])
+						delete(t.tracks, countLabel)
+					}
 				}
 			}
 			t.lostDetectionsBuffer.AppendDets(lostDetections)
-			// Rename from temporal matches. New det copies old det's label
-			renamedNew, freshDets := t.RenameFromMatches(matches, matchMtx, allDetections, filteredNew)
-			if len(freshDets) > 0 {
+			// Returns a new set of detections, from matching allDetections with the filteredNew
+			// All three outputs must be summed together to get the full set of new detections
+			renamedNew, newlyStable, freshDets := t.RenameFromMatches(matches, matchMtx, allDetections, filteredNew)
+			if len(newlyStable) > 0 {
 				//trigger classification and schedule "untrigger"
 				t.trigger()
 
 				// add the detections to the logs
 				t.allFreshObjects.mutex.Lock()
-				for _, det := range freshDets {
-					to, err := newTrackedObjectFromLabel(det.Label())
+				for _, det := range newlyStable {
+					to, err := newTrackedObjectFromLabel(det.Det.Label())
 					if err != nil {
 						t.logger.Error(err)
 					}
@@ -243,6 +264,8 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 				}
 				t.allFreshObjects.mutex.Unlock()
 			}
+			renamedNew = append(renamedNew, newlyStable...)
+			renamedNew = append(renamedNew, freshDets...)
 			t.lastDetections = renamedNew
 			t.currDetections.mutex.Lock()
 			t.currDetections.detections = renamedNew
@@ -292,18 +315,22 @@ func (t *myTracker) trigger() {
 
 // Config contains names for necessary resources (camera and vision service)
 type Config struct {
-	CameraName      string             `json:"camera_name"`
-	DetectorName    string             `json:"detector_name"`
-	ChosenLabels    map[string]float64 `json:"chosen_labels"`
-	MaxFrequency    float64            `json:"max_frequency_hz"`
-	MinConfidence   *float64           `json:"min_confidence,omitempty"`
-	TriggerCoolDown *float64           `json:"trigger_cool_down_s,omitempty"`
-	BufferSize      int                `json:"buffer_size,omitempty"`
+	CameraName          string             `json:"camera_name"`
+	DetectorName        string             `json:"detector_name"`
+	ChosenLabels        map[string]float64 `json:"chosen_labels"`
+	MaxFrequency        float64            `json:"max_frequency_hz"`
+	MinConfidence       *float64           `json:"min_confidence,omitempty"`
+	TriggerCoolDown     *float64           `json:"trigger_cool_down_s,omitempty"`
+	BufferSize          int                `json:"buffer_size,omitempty"`
+	MinTrackPersistence int                `json:"min_track_persistence"`
 }
 
 // Validate validates the config and returns implicit dependencies,
 // this Validate checks if the camera and detector(vision svc) exist for the module's vision model.
 func (cfg *Config) Validate(path string) ([]string, error) {
+	if cfg.MinTrackPersistence < 0 {
+		return nil, errors.New("attribute min_track_persistence cannot be less than 0")
+	}
 	// this makes them required for the model to successfully build
 	if cfg.CameraName == "" {
 		return nil, fmt.Errorf(`expected "camera_name" attribute for object tracker %q`, path)
@@ -336,14 +363,16 @@ func (t *myTracker) Reconfigure(ctx context.Context, deps resource.Dependencies,
 	}
 	t.frequency = trackerConfig.MaxFrequency
 
+	t.minTrackPersistence = trackerConfig.MinTrackPersistence
+
 	//config buffer size
 	if trackerConfig.BufferSize > 0 {
 		if trackerConfig.BufferSize > 256 {
 			return errors.New("buffer size must be between 1 and 256")
 		}
-		t.lostDetectionsBuffer = newDetectionsBuffer(trackerConfig.BufferSize)
+		t.lostDetectionsBuffer = newTracksBuffer(trackerConfig.BufferSize)
 	} else {
-		t.lostDetectionsBuffer = newDetectionsBuffer(DefaultBufferSize)
+		t.lostDetectionsBuffer = newTracksBuffer(DefaultBufferSize)
 	}
 
 	//config trigger cool down
@@ -394,7 +423,7 @@ func (t *myTracker) DetectionsFromCamera(
 		return nil, ctx.Err()
 	default:
 		t.currDetections.mutex.RLock()
-		dets := t.currDetections.detections
+		dets := getStableDetections(t.currDetections.detections)
 		t.currDetections.mutex.RUnlock()
 		return dets, nil
 	}
@@ -408,7 +437,7 @@ func (t *myTracker) Detections(ctx context.Context, img image.Image, extra map[s
 		return nil, ctx.Err()
 	default:
 		t.currDetections.mutex.RLock()
-		dets := t.currDetections.detections
+		dets := getStableDetections(t.currDetections.detections)
 		t.currDetections.mutex.RUnlock()
 		return dets, nil
 	}
@@ -474,7 +503,7 @@ func (t *myTracker) CaptureAllFromCamera(
 		}
 		if opt.ReturnDetections {
 			t.currDetections.mutex.RLock()
-			detections = t.currDetections.detections
+			detections = getStableDetections(t.currDetections.detections)
 			t.currDetections.mutex.RUnlock()
 		}
 		if opt.ReturnClassifications {
@@ -494,32 +523,11 @@ func (t *myTracker) Close(ctx context.Context) error {
 	return nil
 }
 
-type trackedObject struct {
-	FullLabel string
-	Label     string
-	Id        int
-	Time      string
-}
 type benchmark struct {
 	Slowest      float64
 	Fastest      float64
 	Average      float64
 	NumberOfRuns int
-}
-
-func newTrackedObjectFromLabel(label string) (trackedObject, error) {
-	parts := strings.Split(label, "_")
-	id, err := strconv.Atoi(parts[1])
-	if err != nil {
-		return trackedObject{}, errors.Wrapf(err, "unable to parse label %v", label)
-	}
-	return trackedObject{
-		FullLabel: label,
-		Label:     parts[0],
-		Id:        id,
-		Time:      strings.Join(parts[2:], "_"),
-	}, nil
-
 }
 
 // DoCommand will return the slowest, fastest, and average time of the tracking module
@@ -555,30 +563,30 @@ func (t *myTracker) DoCommand(ctx context.Context, cmd map[string]interface{}) (
 	return out, nil
 }
 
-type detectionsBuffer struct {
-	detections [][]objdet.Detection
+type tracksBuffer struct {
+	detections [][]*track
 	size       int
 }
 
-// newDetectionsBuffer initializes a new fixed-length queue with the specified size.
-func newDetectionsBuffer(size int) *detectionsBuffer {
-	return &detectionsBuffer{
-		detections: make([][]objdet.Detection, 0, size),
+// newTracksBuffer initializes a new fixed-length queue with the specified size.
+func newTracksBuffer(size int) *tracksBuffer {
+	return &tracksBuffer{
+		detections: make([][]*track, 0, size),
 		size:       size,
 	}
 }
-func (b *detectionsBuffer) AppendDets(newDets []objdet.Detection) {
+func (b *tracksBuffer) AppendDets(newDets []*track) {
 	if len(b.detections) == b.size {
 		b.detections = b.detections[1:]
 	}
 
 	//remove old dets to match new dets only on the most recent detections
 	for _, newDet := range newDets {
-		countLabel := strings.Join(strings.Split(newDet.Label(), "_")[0:2], "_")
+		countLabel := strings.Join(strings.Split(newDet.Det.Label(), "_")[0:2], "_")
 		for i := range b.detections {
 			dets := b.detections[i]
 			for idx, det := range dets {
-				oldCountLabel := strings.Join(strings.Split(det.Label(), "_")[0:2], "_")
+				oldCountLabel := strings.Join(strings.Split(det.Det.Label(), "_")[0:2], "_")
 				if countLabel == oldCountLabel {
 					b.detections[i] = append(dets[:idx], dets[idx+1:]...)
 					break
