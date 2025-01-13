@@ -4,8 +4,7 @@ package object_tracker
 import (
 	"context"
 	"fmt"
-	"go.viam.com/rdk/gostream"
-	"go.viam.com/rdk/vision/viscapture"
+	"image"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,14 +14,15 @@ import (
 	hg "github.com/charles-haynes/munkres"
 	"github.com/pkg/errors"
 	"go.viam.com/rdk/components/camera"
+	"go.viam.com/rdk/gostream"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/resource"
 	"go.viam.com/rdk/services/vision"
 	vis "go.viam.com/rdk/vision"
 	"go.viam.com/rdk/vision/classification"
 	objdet "go.viam.com/rdk/vision/objectdetection"
+	"go.viam.com/rdk/vision/viscapture"
 	viamutils "go.viam.com/utils"
-	"image"
 )
 
 // ModelName is the name of the model
@@ -86,6 +86,7 @@ type myTracker struct {
 	chosenLabels  map[string]float64
 	classCounter  map[string]int
 	tracks        map[string][]objdet.Detection
+	lastReset     time.Time
 	timeStats     []time.Duration
 }
 
@@ -190,6 +191,16 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 			return
 		default:
 			start := time.Now()
+
+			// Reset if it's the exact time or it's been more than 24 hours since last reset
+			itsBeen := start.Sub(t.lastReset)
+			h, m, s := start.Hour(), start.Minute(), start.Second()
+			if itsBeen >= 24*time.Hour ||
+				(h == t.lastReset.Hour() && m == t.lastReset.Minute() && s == t.lastReset.Second()) {
+				t.classCounter = make(map[string]int)
+				t.lastReset = start
+			}
+
 			// Take fresh detections from fresh image
 			img, _, err := stream.Next(cancelableCtx)
 			if err != nil {
@@ -210,9 +221,7 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 			// Store oldDetection and lost detections in allDetections
 			allDetections := t.lastDetections
 			for _, dets := range t.lostDetectionsBuffer.detections {
-				for _, det := range dets {
-					allDetections = append(allDetections, det)
-				}
+				allDetections = append(allDetections, dets...)
 			}
 			// Build and solve cost matrix via Munkres' method
 			matchMtx := t.BuildMatchingMatrix(allDetections, filteredNew)
@@ -299,6 +308,7 @@ type Config struct {
 	MinConfidence   *float64           `json:"min_confidence,omitempty"`
 	TriggerCoolDown *float64           `json:"trigger_cool_down_s,omitempty"`
 	BufferSize      int                `json:"buffer_size,omitempty"`
+	ResetTime       string             `json:"reset_time,omitempty"`
 }
 
 // Validate validates the config and returns implicit dependencies,
@@ -364,6 +374,21 @@ func (t *myTracker) Reconfigure(ctx context.Context, deps resource.Dependencies,
 	}
 	if t.minConfidence < 0 || t.minConfidence > 1 {
 		return errors.New("minimum thresholding confidence must be between 0.0 and 1.0")
+	}
+
+	// config reset time
+	// initialize to yesterday at configured time (of the form "HH:MM:SS").
+	// if no input given, default to midnight
+	y, m, d := time.Now().AddDate(0, 0, -1).Date()
+	here := time.Now().Location()
+	if trackerConfig.ResetTime == "" {
+		t.lastReset = time.Date(y, m, d, 0, 0, 0, 0, here)
+	} else {
+		resetTime, err := time.Parse("15:04:05", trackerConfig.ResetTime)
+		if err != nil {
+			return errors.Wrap(err, "reset time must be formatted as 'HH:MM:SS'")
+		}
+		t.lastReset = time.Date(y, m, d, resetTime.Hour(), resetTime.Minute(), resetTime.Second(), 0, here)
 	}
 
 	t.chosenLabels = trackerConfig.ChosenLabels
