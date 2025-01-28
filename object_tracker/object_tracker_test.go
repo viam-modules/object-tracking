@@ -57,13 +57,13 @@ func getTracker() (vision.Service, error) { //nolint:unused
 		ImageFunc: func(ctx context.Context, mimeType string, extra map[string]interface{}) ([]byte, camera.ImageMetadata, error) {
 			img, err := rimage.NewImageFromFile("./test_files/dogscute.jpeg")
 			if err != nil {
-				fmt.Println("BABY THIS IS THE FUCKUP RIGHT HERE")
 				fmt.Println(err)
+				panic(err)
 			}
 			imgBytes, err := rimage.EncodeImage(ctx, img, utils.MimeTypeJPEG)
 			if err != nil {
-				fmt.Println("BABY THIS IS THE OTHER OTHER FUCKUP RIGHT HERE")
 				fmt.Println(err)
+				panic(err)
 			}
 			return imgBytes, camera.ImageMetadata{MimeType: utils.MimeTypeJPEG}, nil
 		},
