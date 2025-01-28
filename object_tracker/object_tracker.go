@@ -210,9 +210,7 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 			// Store oldDetection and lost detections in allDetections
 			allDetections := t.lastDetections
 			for _, dets := range t.lostDetectionsBuffer.detections {
-				for _, det := range dets {
-					allDetections = append(allDetections, det)
-				}
+				allDetections = append(allDetections, dets...)
 			}
 			// Build and solve cost matrix via Munkres' method
 			matchMtx := t.BuildMatchingMatrix(allDetections, filteredNew)

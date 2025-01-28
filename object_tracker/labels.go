@@ -5,7 +5,6 @@
 package object_tracker
 
 import (
-	"fmt"
 	objdet "go.viam.com/rdk/vision/objectdetection"
 	"strconv"
 	"strings"
@@ -15,7 +14,7 @@ import (
 // GetTimestamp will retrieve and format a timestamp to be YYYYMMDD_HHMMSS
 func GetTimestamp() string {
 	currTime := time.Now()
-	return fmt.Sprintf(currTime.Format("20060102_150405"))
+	return currTime.Format("20060102_150405")
 }
 
 // ReplaceLabel replaces the detection with an almost identical detection (new label)

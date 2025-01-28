@@ -1,12 +1,21 @@
 package object_tracker
 
 import (
+	"context"
+	"fmt"
+	"go.viam.com/rdk/components/camera"
+	"go.viam.com/rdk/logging"
+	"go.viam.com/rdk/resource"
+	"go.viam.com/rdk/rimage"
+	"go.viam.com/rdk/testutils/inject"
+	"go.viam.com/rdk/utils"
+	"image"
+	"testing"
+
 	hg "github.com/charles-haynes/munkres"
 	"go.viam.com/rdk/services/vision"
 	objdet "go.viam.com/rdk/vision/objectdetection"
 	"go.viam.com/test"
-	"image"
-	"testing"
 )
 
 const (
@@ -27,6 +36,107 @@ func (fd *FakeDetector) fakeDetections() []objdet.Detection {
 func checkLabel(t *testing.T, value objdet.Detection, target string) {
 	test.That(t, value.Label()[:len(target)], test.ShouldEqual, target)
 }
+
+func getTracker() (vision.Service, error) { //nolint:unused
+
+	ctx := context.Background()
+	logger := logging.NewLogger("test")
+
+	det0 := objdet.NewDetection(image.Rect(0, 0, 10, 10), 1, LabelDet0)
+	det1 := objdet.NewDetection(image.Rect(20, 20, 30, 30), 1, LabelDet1)
+	det1_1 := objdet.NewDetection(image.Rect(22, 22, 33, 33), 1, LabelDet1)
+	detsT0 := []objdet.Detection{det0, det1}
+	detsT1 := []objdet.Detection{det0}
+	detsT2 := []objdet.Detection{det1_1}
+	detsT3 := []objdet.Detection{det0}
+
+	fd := &FakeDetector{
+		res: [][]objdet.Detection{detsT0, detsT1, detsT2, detsT3},
+	}
+	cam := &inject.Camera{
+		ImageFunc: func(ctx context.Context, mimeType string, extra map[string]interface{}) ([]byte, camera.ImageMetadata, error) {
+			img, err := rimage.NewImageFromFile("./test_files/dogscute.jpeg")
+			if err != nil {
+				fmt.Println("BABY THIS IS THE FUCKUP RIGHT HERE")
+				fmt.Println(err)
+			}
+			imgBytes, err := rimage.EncodeImage(ctx, img, utils.MimeTypeJPEG)
+			if err != nil {
+				fmt.Println("BABY THIS IS THE OTHER OTHER FUCKUP RIGHT HERE")
+				fmt.Println(err)
+			}
+			return imgBytes, camera.ImageMetadata{MimeType: utils.MimeTypeJPEG}, nil
+		},
+	}
+	detector := &inject.VisionService{
+		DetectionsFunc: func(ctx context.Context, img image.Image, extra map[string]interface{}) ([]objdet.Detection, error) {
+			return fd.fakeDetections(), nil
+		},
+	}
+
+	//reg, ok := resource.LookupRegistration(vision.API, Model)
+
+	OTConfig := &Config{CameraName: "camera", DetectorName: "detector"}
+	realConf := resource.Config{
+		Name:                "test-objtracker",
+		API:                 vision.API,
+		ConvertedAttributes: OTConfig,
+	}
+	deps := resource.Dependencies{}
+	deps[camera.Named("camera")] = cam
+	deps[vision.Named("detector")] = detector
+
+	out, err := newTracker(ctx, deps, realConf, logger)
+	if err != nil {
+		fmt.Println(err)
+		return nil, err
+	}
+
+	return out, nil
+
+}
+
+func TestValidate(t *testing.T) {
+	// empty cfg
+	emptyCfg := Config{}
+	emptyDeps, err := emptyCfg.Validate("")
+	test.That(t, err, test.ShouldNotBeNil)
+	test.That(t, emptyDeps, test.ShouldBeNil)
+
+	// good cfg
+	goodCfg := Config{CameraName: "camera", DetectorName: "detector"}
+	goodDeps, err := goodCfg.Validate("")
+	test.That(t, err, test.ShouldBeNil)
+	test.That(t, goodDeps, test.ShouldNotBeNil)
+
+	// bad cfg
+	badCfg := Config{CameraName: "camera"}
+	badDeps, err := badCfg.Validate("")
+	test.That(t, err, test.ShouldNotBeNil)
+	test.That(t, badDeps, test.ShouldBeNil)
+	test.That(t, err.Error(), test.ShouldContainSubstring, "detector_name")
+}
+
+func TestEmptyConfig(t *testing.T) {
+	ctx := context.Background()
+	emptyCfg := resource.Config{}
+	logger := logging.NewTestLogger(t)
+
+	emptyGot, err := newTracker(ctx, nil, emptyCfg, logger)
+	test.That(t, emptyGot, test.ShouldBeNil)
+	test.That(t, err.Error(), test.ShouldContainSubstring, "proper config")
+}
+
+/*
+func TestGetProperties(t *testing.T) {
+
+	tracker, err := getTracker()
+	fmt.Println(tracker)
+	fmt.Println(err)
+
+}
+
+*/
 
 func TestTracker(t *testing.T) {
 	det0 := objdet.NewDetection(image.Rect(0, 0, 10, 10), 1, LabelDet0)
@@ -102,9 +212,7 @@ func TestTracker(t *testing.T) {
 	// Store oldDetection and lost detections in allDetections
 	allDetections := fakeTracker.lastDetections
 	for _, dets := range fakeTracker.lostDetectionsBuffer.detections {
-		for _, det := range dets {
-			allDetections = append(allDetections, det)
-		}
+		allDetections = append(allDetections, dets...)
 	}
 
 	// Build and solve cost matrix via Munkres' method
@@ -147,9 +255,7 @@ func TestTracker(t *testing.T) {
 	// Store oldDetection and lost detections in allDetections
 	allDetections = fakeTracker.lastDetections
 	for _, dets := range fakeTracker.lostDetectionsBuffer.detections {
-		for _, det := range dets {
-			allDetections = append(allDetections, det)
-		}
+		allDetections = append(allDetections, dets...)
 	}
 
 	// Build and solve cost matrix via Munkres' method
