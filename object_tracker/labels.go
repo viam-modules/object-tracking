@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	objdet "go.viam.com/rdk/vision/objectdetection"
 )
 
 // GetTimestamp will retrieve and format a timestamp to be YYYYMMDD_HHMMSS
@@ -18,46 +20,65 @@ func GetTimestamp() string {
 }
 
 // ReplaceLabel replaces the detection with an almost identical detection (new label)
-func ReplaceLabel(det objdet.Detection, label string) objdet.Detection {
-	return objdet.NewDetection(*det.BoundingBox(), det.Score(), label)
+func ReplaceLabel(tr *track, label string) *track {
+	det := objdet.NewDetection(*tr.Det.BoundingBox(), tr.Det.Score(), label)
+	newTrack := tr.clone()
+	newTrack.Det = det
+	return newTrack
+}
+
+// ReplaceBoundingBox replaces the detection with an almost identical detection (new bounding box)
+func ReplaceBoundingBox(tr *track, bb *image.Rectangle) *track {
+	det := objdet.NewDetection(*bb, tr.Det.Score(), tr.Det.Label())
+	newTrack := tr.clone()
+	newTrack.Det = det
+	return newTrack
 }
 
 // RenameFromMatches takes the output of the Hungarian matching algorithm and
 // gives the new detection the same label as the matching old detection.  Any new detections
 // found will be given a new name (and cleass counter will be updated)
 // Also return freshDets that are the fresh detections that were not matched with any detections in the previous frame.
-func (t *myTracker) RenameFromMatches(matches []int, matchinMtx [][]float64, oldDets, newDets []objdet.Detection) ([]objdet.Detection, []objdet.Detection) {
+func (t *myTracker) RenameFromMatches(matches []int, matchinMtx [][]float64, oldDets, newDets []*track) ([]*track, []*track, []*track) {
 	// Fill up a map with the indices of newDetections we have
 	notUsed := make(map[int]struct{})
 	for i, _ := range newDets {
 		notUsed[i] = struct{}{}
 	}
 	// Go through valid matches and update name and track
+	updatedTracks := make([]*track, 0)
+	newlyStableTracks := make([]*track, 0)
 	for oldIdx, newIdx := range matches {
 		if newIdx != -1 {
 			if matchinMtx[oldIdx][newIdx] != 0 {
 				if newIdx >= 0 && newIdx < len(newDets) && oldIdx >= 0 && oldIdx < len(oldDets) {
-					newDets[newIdx] = ReplaceLabel(newDets[newIdx], oldDets[oldIdx].Label())
-					t.UpdateTrack(newDets[newIdx])
+					// take the old track, clone it, and update their Bounding Box
+					// to the new track. Increment its persistence counter.
+					updatedTrack, newlyStable := t.UpdateTrack(newDets[newIdx], oldDets[oldIdx])
+					if newlyStable {
+						newlyStableTracks = append(newlyStableTracks, updatedTrack)
+					} else {
+						updatedTracks = append(updatedTracks, updatedTrack)
+					}
 					delete(notUsed, newIdx)
 				}
 			}
 		}
 	}
 	// Go through all NEW things and add them in (name them and start new track)
-	var freshDets []objdet.Detection
+	freshTracks := make([]*track, 0)
 	for idx := range notUsed {
 		newDet := t.RenameFirstTime(newDets[idx])
 		newDets[idx] = newDet
-		freshDets = append(freshDets, newDet)
+		freshTracks = append(freshTracks, newDet)
 	}
-	return newDets, freshDets
+	return updatedTracks, newlyStableTracks, freshTracks
 }
 
 // RenameFirstTime should activate whenever a new object appears.
 // It will start or update a class counter for whichever class and create a new track.
-func (t *myTracker) RenameFirstTime(det objdet.Detection) objdet.Detection {
-	baseLabel := strings.ToLower(strings.Split(det.Label(), "_")[0])
+func (t *myTracker) RenameFirstTime(det *track) *track {
+	baseLabel := strings.ToLower(strings.Split(det.Det.Label(), "_")[0])
 	classCount, ok := t.classCounter[baseLabel]
 	if !ok {
 		t.classCounter[baseLabel] = 0
@@ -66,15 +87,29 @@ func (t *myTracker) RenameFirstTime(det objdet.Detection) objdet.Detection {
 	}
 	countLabel := baseLabel + "_" + strconv.Itoa(t.classCounter[baseLabel])
 	label := countLabel + "_" + GetTimestamp()
-	out := objdet.NewDetection(*det.BoundingBox(), det.Score(), label)
-	t.tracks[countLabel] = []objdet.Detection{out} // Start new track with this one
+	out := ReplaceLabel(det, label)
+	// start a new track, but it will be tentative, and may be removed if lost
+	// before persistence counter reaches "stable"
+	t.tracks[countLabel] = []*track{out}
 	return out
 }
 
-func (t *myTracker) UpdateTrack(det objdet.Detection) {
-	countLabel := strings.Join(strings.Split(det.Label(), "_")[0:2], "_")
-	track, ok := t.tracks[countLabel]
+func getTrackingLabel(tr *track) string {
+	return strings.Join(strings.Split(tr.Det.Label(), "_")[0:2], "_")
+}
+
+// UpdateTrack changes the old bounding box to the new one, updates persistence,
+// and also returns if the track became newly stable
+func (t *myTracker) UpdateTrack(nextTrack, oldMatchedTrack *track) (*track, bool) {
+	wasStable := oldMatchedTrack.isStable()
+	newTrack := ReplaceBoundingBox(oldMatchedTrack, nextTrack.Det.BoundingBox())
+	newTrack.addPersistence()
+	countLabel := getTrackingLabel(newTrack)
+	trackSlice, ok := t.tracks[countLabel]
 	if ok {
-		t.tracks[countLabel] = append(track, det)
+		t.tracks[countLabel] = append(trackSlice, newTrack)
 	}
+	isNowStable := newTrack.isStable()
+	newlyStable := wasStable != isNowStable
+	return newTrack, newlyStable
 }

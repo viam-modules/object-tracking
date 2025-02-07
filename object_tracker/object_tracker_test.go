@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	LabelDet0 string = "cat"
-	LabelDet1 string = "fish"
+	LabelDet0            string = "cat"
+	LabelDet1            string = "fish"
+	TestPersistenceLimit int    = 2
 )
 
 type FakeDetector struct {
@@ -33,8 +34,8 @@ func (fd *FakeDetector) fakeDetections() []objdet.Detection {
 	return fd.res[fd.it-1]
 }
 
-func checkLabel(t *testing.T, value objdet.Detection, target string) {
-	test.That(t, value.Label()[:len(target)], test.ShouldEqual, target)
+func checkLabel(t *testing.T, value *track, target string) {
+	test.That(t, value.Det.Label()[:len(target)], test.ShouldEqual, target)
 }
 
 func getTracker() (vision.Service, error) { //nolint:unused
@@ -153,7 +154,7 @@ func TestTracker(t *testing.T) {
 
 	fakeTracker := &myTracker{
 		classCounter: make(map[string]int),
-		tracks:       make(map[string][]objdet.Detection),
+		tracks:       make(map[string][]*track),
 		properties: vision.Properties{
 			ClassificationSupported: true,
 			DetectionSupported:      true,
@@ -162,13 +163,13 @@ func TestTracker(t *testing.T) {
 		allFreshObjects: allObjects{
 			objects: []trackedObject{},
 		},
-		lostDetectionsBuffer: newDetectionsBuffer(10),
+		lostDetectionsBuffer: newTracksBuffer(10),
 	}
 
 	//initialisation
-	filteredOld := fd.fakeDetections() // get cat and fish
-	filteredNew := fd.fakeDetections() //get cat
-	renamedOld := make([]objdet.Detection, 0, len(filteredOld))
+	filteredOld := newTracks(fd.fakeDetections(), TestPersistenceLimit) // get cat and fish
+	filteredNew := newTracks(fd.fakeDetections(), TestPersistenceLimit) //get cat
+	renamedOld := make([]*track, 0, len(filteredOld))
 	for _, det := range filteredOld {
 		newDet := fakeTracker.RenameFirstTime(det) //create label fish_0 and cat_0
 		renamedOld = append(renamedOld, newDet)
@@ -179,7 +180,7 @@ func TestTracker(t *testing.T) {
 	HA, err := hg.NewHungarianAlgorithm(matchMtx)
 	test.That(t, err, test.ShouldBeNil)
 	matches := HA.Execute()
-	lostDetections := []objdet.Detection{}
+	lostDetections := []*track{}
 	for idx, _ := range matches {
 		if matches[idx] == -1 {
 			lostDetections = append(lostDetections, renamedOld[idx])
@@ -190,9 +191,10 @@ func TestTracker(t *testing.T) {
 	fakeTracker.lostDetectionsBuffer.AppendDets(lostDetections)
 
 	// Rename from temporal matches. New det copies old det's label
-	renamedNew, _ := fakeTracker.RenameFromMatches(matches, matchMtx, renamedOld, filteredNew)
+	renamedNew, newlyStable, _ := fakeTracker.RenameFromMatches(matches, matchMtx, renamedOld, filteredNew)
 
 	//Store stuffs
+	renamedNew = append(renamedNew, newlyStable...)
 	fakeTracker.lastDetections = renamedNew
 	fakeTracker.currDetections.mutex.Lock()
 	fakeTracker.currDetections.detections = renamedNew
@@ -207,7 +209,7 @@ func TestTracker(t *testing.T) {
 
 	//End of initialisation get new detections
 
-	filteredNew = fd.fakeDetections() //get fish but somewhere else
+	filteredNew = newTracks(fd.fakeDetections(), TestPersistenceLimit) //get fish but somewhere else
 
 	// Store oldDetection and lost detections in allDetections
 	allDetections := fakeTracker.lastDetections
@@ -219,7 +221,7 @@ func TestTracker(t *testing.T) {
 	matchMtx = fakeTracker.BuildMatchingMatrix(allDetections, filteredNew)
 	HA, _ = hg.NewHungarianAlgorithm(matchMtx)
 	matches = HA.Execute()
-	lostDetections = []objdet.Detection{}
+	lostDetections = []*track{}
 	for idx, _ := range fakeTracker.lastDetections {
 		if matches[idx] == -1 {
 			lostDetections = append(lostDetections, fakeTracker.lastDetections[idx])
@@ -230,10 +232,11 @@ func TestTracker(t *testing.T) {
 
 	//}
 	// Rename from temporal matches. New det copies old det's label
-	renamedNew, _ = fakeTracker.RenameFromMatches(matches, matchMtx, allDetections, filteredNew)
+	renamedNew, newlyStable, _ = fakeTracker.RenameFromMatches(matches, matchMtx, allDetections, filteredNew)
 	fakeTracker.lostDetectionsBuffer.AppendDets(lostDetections)
 
 	// Store results
+	renamedNew = append(renamedNew, newlyStable...)
 	fakeTracker.lastDetections = renamedNew
 	fakeTracker.currDetections.mutex.Lock()
 	fakeTracker.currDetections.detections = renamedNew
@@ -244,11 +247,11 @@ func TestTracker(t *testing.T) {
 	currDetections = fakeTracker.currDetections.detections
 	fakeTracker.currDetections.mutex.RUnlock()
 	test.That(t, len(currDetections), test.ShouldEqual, 1)
-	test.That(t, currDetections[0].Label()[:len(LabelDet1)], test.ShouldEqual, LabelDet1)
+	test.That(t, currDetections[0].Det.Label()[:len(LabelDet1)], test.ShouldEqual, LabelDet1)
 
 	//Detecting a new cat, now we want to make sure that we don't have 2 "fish_zero"
 	//when fish get lost
-	filteredNew = fd.fakeDetections() //get cat again
+	filteredNew = newTracks(fd.fakeDetections(), TestPersistenceLimit) //get cat again
 	test.That(t, len(filteredNew), test.ShouldEqual, 1)
 	checkLabel(t, filteredNew[0], LabelDet0)
 
@@ -262,7 +265,7 @@ func TestTracker(t *testing.T) {
 	matchMtx = fakeTracker.BuildMatchingMatrix(allDetections, filteredNew)
 	HA, _ = hg.NewHungarianAlgorithm(matchMtx)
 	matches = HA.Execute()
-	lostDetections = []objdet.Detection{}
+	lostDetections = []*track{}
 	for idx, _ := range fakeTracker.lastDetections {
 		if matches[idx] == -1 {
 			lostDetections = append(lostDetections, fakeTracker.lastDetections[idx])
@@ -273,18 +276,19 @@ func TestTracker(t *testing.T) {
 
 	//}
 	// Rename from temporal matches. New det copies old det's label
-	renamedNew, _ = fakeTracker.RenameFromMatches(matches, matchMtx, allDetections, filteredNew)
+	renamedNew, newlyStable, _ = fakeTracker.RenameFromMatches(matches, matchMtx, allDetections, filteredNew)
+	renamedNew = append(renamedNew, newlyStable...)
 	test.That(t, len(fakeTracker.lostDetectionsBuffer.detections[0]), test.ShouldEqual, 1)
 	checkLabel(t, fakeTracker.lostDetectionsBuffer.detections[0][0], LabelDet1) //check if there used to be fish
 	test.That(
 		t,
-		fakeTracker.lostDetectionsBuffer.detections[0][0].BoundingBox().Min,
+		fakeTracker.lostDetectionsBuffer.detections[0][0].Det.BoundingBox().Min,
 		test.ShouldResemble,
 		image.Pt(20, 20),
 	)
 	test.That(
 		t,
-		fakeTracker.lostDetectionsBuffer.detections[0][0].BoundingBox().Max,
+		fakeTracker.lostDetectionsBuffer.detections[0][0].Det.BoundingBox().Max,
 		test.ShouldResemble,
 		image.Pt(30, 30),
 	)
@@ -297,27 +301,27 @@ func TestTracker(t *testing.T) {
 	checkLabel(t, fakeTracker.lostDetectionsBuffer.detections[2][0], LabelDet1)
 	test.That(
 		t,
-		fakeTracker.lostDetectionsBuffer.detections[2][0].BoundingBox().Min,
+		fakeTracker.lostDetectionsBuffer.detections[2][0].Det.BoundingBox().Min,
 		test.ShouldResemble,
 		image.Pt(22, 22),
 	)
 	test.That(
 		t,
-		fakeTracker.lostDetectionsBuffer.detections[2][0].BoundingBox().Max,
+		fakeTracker.lostDetectionsBuffer.detections[2][0].Det.BoundingBox().Max,
 		test.ShouldResemble,
 		image.Pt(33, 33),
 	)
 
 	test.That(
 		t,
-		fakeTracker.lostDetectionsBuffer.detections[2][0].BoundingBox().Max,
+		fakeTracker.lostDetectionsBuffer.detections[2][0].Det.BoundingBox().Max,
 		test.ShouldNotResemble,
 		image.Pt(20, 20),
 	)
 
 	test.That(
 		t,
-		fakeTracker.lostDetectionsBuffer.detections[2][0].BoundingBox().Max,
+		fakeTracker.lostDetectionsBuffer.detections[2][0].Det.BoundingBox().Max,
 		test.ShouldNotResemble,
 		image.Pt(30, 30),
 	)
