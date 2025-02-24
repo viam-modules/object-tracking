@@ -3,14 +3,15 @@ package object_tracker
 import (
 	"context"
 	"fmt"
+	"image"
+	"testing"
+
 	"go.viam.com/rdk/components/camera"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/resource"
 	"go.viam.com/rdk/rimage"
 	"go.viam.com/rdk/testutils/inject"
 	"go.viam.com/rdk/utils"
-	"image"
-	"testing"
 
 	hg "github.com/charles-haynes/munkres"
 	"go.viam.com/rdk/services/vision"

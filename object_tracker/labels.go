@@ -5,7 +5,7 @@
 package object_tracker
 
 import (
-	objdet "go.viam.com/rdk/vision/objectdetection"
+	"image"
 	"strconv"
 	"strings"
 	"time"
