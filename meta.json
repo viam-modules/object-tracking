@@ -6,7 +6,9 @@
   "models": [
     {
       "api": "rdk:service:vision",
-      "model": "viam:vision:object-tracker"
+      "model": "viam:vision:object-tracker",
+      "markdown_link": "README.md#example-attributes",
+      "short_description": "A vision service that tracks objects across time"
     }
   ],
   "build": {
