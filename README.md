@@ -6,9 +6,9 @@ Configure this vision service as a [modular resource](https://docs.viam.com/modu
 
 ## Getting started
 
-The first step is to configure a camera on your robot.  [Here](https://docs.viam.com/components/camera/webcam/) is an example of how to configure a webcam. The next step is to configure a vision service to use as a detector.  Remember the names given to the camera and detector, it will be important later. 
+The first step is to configure a camera on your robot.  [Here](https://docs.viam.com/components/camera/webcam/) is an example of how to configure a webcam. The next step is to configure a vision service to use as a detector.  Remember the names given to the camera and detector, it will be important later.
 
-> [!NOTE]  
+> [!NOTE]
 > Before configuring your camera or vision service, you must [create a robot](https://docs.viam.com/manage/fleet/robots/#add-a-new-robot).
 
 ## Configuration
@@ -49,7 +49,7 @@ Navigate to the **Config** tab of your robot’s page in [the Viam app](https://
 
 ```
 
-> [!NOTE]  
+> [!NOTE]
 > For more information, see [Configure a Robot](https://docs.viam.com/manage/configuration/).
 
 ### Attributes
@@ -83,7 +83,7 @@ The following attributes are available for `viam:vision:object-tracker` vision s
 
 ### Usage
 
-This module is made for use with the following methods of the [vision service API](https://docs.viam.com/services/vision/#api): 
+This module is made for use with the following methods of the [vision service API](https://docs.viam.com/services/vision/#api):
 - `GetProperties()`
 - [`GetDetections()`](https://docs.viam.com/services/vision/#getdetections)
 - [`GetDetectionsFromCamera()`](https://docs.viam.com/services/vision/#getdetectionsfromcamera)
@@ -95,6 +95,6 @@ This module is made for use with the following methods of the [vision service AP
 The module will return a list of detections. The bounding box and `confidence` of each detection will be as detected by the underlying detector that was passed to the object-tracking module.  The new `class_name` will be: "< old `class_name`>_N_YYYYMMDD_HHMMSS", where the object is the Nth of it's class and was originally seen at the time/date indicated by YYYYMMDD_HHMMSS.
 
 
-## Visualize 
+## Visualize
 
 Once the `viam:vision:object-tracker` modular service is in use, configure a [transform camera](https://docs.viam.com/components/camera/transform/) detections appear in your robot's field of vision.
