@@ -182,7 +182,7 @@ func TestTracker(t *testing.T) {
 	test.That(t, err, test.ShouldBeNil)
 	matches := HA.Execute()
 	lostDetections := []*track{}
-	for idx, _ := range matches {
+	for idx := range matches {
 		if matches[idx] == -1 {
 			lostDetections = append(lostDetections, renamedOld[idx])
 		}
@@ -223,7 +223,7 @@ func TestTracker(t *testing.T) {
 	HA, _ = hg.NewHungarianAlgorithm(matchMtx)
 	matches = HA.Execute()
 	lostDetections = []*track{}
-	for idx, _ := range fakeTracker.lastDetections {
+	for idx := range fakeTracker.lastDetections {
 		if matches[idx] == -1 {
 			lostDetections = append(lostDetections, fakeTracker.lastDetections[idx])
 		}
@@ -267,7 +267,7 @@ func TestTracker(t *testing.T) {
 	HA, _ = hg.NewHungarianAlgorithm(matchMtx)
 	matches = HA.Execute()
 	lostDetections = []*track{}
-	for idx, _ := range fakeTracker.lastDetections {
+	for idx := range fakeTracker.lastDetections {
 		if matches[idx] == -1 {
 			lostDetections = append(lostDetections, fakeTracker.lastDetections[idx])
 		}
