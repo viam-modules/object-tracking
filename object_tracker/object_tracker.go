@@ -161,7 +161,7 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 	}
 	matches := HA.Execute()
 	var lostDetections []*track
-	for idx, _ := range matches {
+	for idx := range matches {
 		if matches[idx] == -1 {
 			// if lost detection is not stable, discard it
 			if renamedOld[idx].isStable() {
@@ -234,7 +234,7 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 			// Store the lost detections in the buffer, drop lost detections
 			// if they were not considered stable
 			var lostDetections []*track
-			for idx, _ := range t.lastDetections {
+			for idx := range t.lastDetections {
 				if matches[idx] == -1 {
 					if t.lastDetections[idx].isStable() {
 						lostDetections = append(lostDetections, t.lastDetections[idx])
