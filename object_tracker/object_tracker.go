@@ -413,7 +413,7 @@ func (t *myTracker) DetectionsFromCamera(
 	cameraName string,
 	extra map[string]interface{},
 ) ([]objdet.Detection, error) {
-	if cameraName != t.camName {
+	if cameraName == "" || cameraName != t.camName {
 		return nil, errors.Errorf("Camera name given to method, %v is not the same as configured camera %v", cameraName, t.camName)
 	}
 	select {
@@ -449,7 +449,7 @@ func (t *myTracker) ClassificationsFromCamera(
 	n int,
 	extra map[string]interface{},
 ) (classification.Classifications, error) {
-	if cameraName != t.camName {
+	if cameraName == "" || cameraName != t.camName {
 		return nil, errors.Errorf("Camera name given to method, %v is not the same as configured camera %v", cameraName, t.camName)
 	}
 	if newInstance := t.newInstance.Load(); newInstance {
@@ -496,7 +496,7 @@ func (t *myTracker) CaptureAllFromCamera(
 		return viscapture.VisCapture{}, ctx.Err()
 	default:
 		if opt.ReturnImage {
-			if cameraName != t.camName {
+			if cameraName == "" || cameraName != t.camName {
 				return viscapture.VisCapture{}, errors.Errorf("Camera name given to method, %v is not the same as configured camera %v", cameraName, t.camName)
 			}
 			img = *t.currImg.Load()
