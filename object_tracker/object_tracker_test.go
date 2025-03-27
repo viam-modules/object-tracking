@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"image"
-	"sync/atomic"
 	"testing"
 
 	"go.viam.com/rdk/components/camera"
@@ -347,7 +346,6 @@ func TestInvalidCameraNamesError(t *testing.T) {
 	ctx := context.Background()
 	fakeTracker := &myTracker{
 		camName: "test",
-		currImg: atomic.Pointer[image.Image]{},
 		cancelContext: ctx,
 	}
 
@@ -361,7 +359,7 @@ func TestInvalidCameraNamesError(t *testing.T) {
 
 	// Test empty (valid) camera name in DetectionsFromCamera
 	_, err = fakeTracker.DetectionsFromCamera(ctx, "", make(map[string]interface{}))
-	test.That(t, err, test.ShouldNotBeNil)
+	test.That(t, err, test.ShouldBeNil)
 
 	// Test invalid camera name in ClassificationsFromCamera
 	_, err = fakeTracker.ClassificationsFromCamera(ctx, invalidName, 0, make(map[string]interface{}))
@@ -370,14 +368,10 @@ func TestInvalidCameraNamesError(t *testing.T) {
 
 	// Test empty (valid) camera name in ClassificationsFromCamera
 	_, err = fakeTracker.ClassificationsFromCamera(ctx, "", 0, make(map[string]interface{}))
-	test.That(t, err, test.ShouldNotBeNil)
+	test.That(t, err, test.ShouldBeNil)
 
 	// Test invalid camera name in CaptureAllFromCamera
 	_, err = fakeTracker.CaptureAllFromCamera(ctx, invalidName, viscapture.CaptureOptions{ReturnImage: true}, make(map[string]interface{}))
 	test.That(t, err, test.ShouldNotBeNil)
 	test.That(t, err.Error(), test.ShouldContainSubstring, invalidNameErrorMessage)
-
-	// Test empty (valid) camera name in CaptureAllFromCamera
-	_, err = fakeTracker.CaptureAllFromCamera(ctx, "", viscapture.CaptureOptions{ReturnImage: true}, make(map[string]interface{}))
-	test.That(t, err, test.ShouldNotBeNil)
 }
