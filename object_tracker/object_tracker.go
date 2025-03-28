@@ -187,7 +187,7 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 		t.run(stream, t.cancelContext)
 	}, func() {
 		t.cancelFunc()
-		viamutils.UncheckedError(stream.Close(t.cancelContext))
+		stream.Close(t.cancelContext)
 		t.activeBackgroundWorkers.Done()
 	})
 
