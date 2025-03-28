@@ -344,10 +344,15 @@ func TestTracker(t *testing.T) {
 
 func TestInvalidCameraNamesError(t *testing.T) {
 	ctx := context.Background()
+	var img image.Image
+	rect := image.Rect(0, 0, 10, 10)
+	img = rimage.NewImageFromBounds(rect)
+
 	fakeTracker := &myTracker{
-		camName: "test",
+		camName:       "test",
 		cancelContext: ctx,
 	}
+	fakeTracker.currImg.Store(&img)
 
 	invalidName := "not-camera"
 	invalidNameErrorMessage := "Camera name given to method, not-camera is not the same as configured camera test"
@@ -375,4 +380,8 @@ func TestInvalidCameraNamesError(t *testing.T) {
 	_, err = fakeTracker.CaptureAllFromCamera(ctx, invalidName, viscapture.CaptureOptions{ReturnImage: true}, emptyMap)
 	test.That(t, err, test.ShouldNotBeNil)
 	test.That(t, err.Error(), test.ShouldContainSubstring, invalidNameErrorMessage)
+
+	// Test empty (valid) camera name in CaptureAllFromCamera
+	_, err = fakeTracker.CaptureAllFromCamera(ctx, "", viscapture.CaptureOptions{ReturnImage: true}, emptyMap)
+	test.That(t, err, test.ShouldBeNil)
 }
