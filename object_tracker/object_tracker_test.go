@@ -45,9 +45,9 @@ func getTracker() (vision.Service, error) { //nolint:unused
 	ctx := context.Background()
 	logger := logging.NewLogger("test")
 
-	det0 := objdet.NewDetection(image.Rect(0, 0, 10, 10), 1, LabelDet0)
-	det1 := objdet.NewDetection(image.Rect(20, 20, 30, 30), 1, LabelDet1)
-	det1_1 := objdet.NewDetection(image.Rect(22, 22, 33, 33), 1, LabelDet1)
+	det0 := objdet.NewDetection(image.Rect(0, 0, 50, 50), image.Rect(0, 0, 10, 10), 1, LabelDet0)
+	det1 := objdet.NewDetection(image.Rect(0, 0, 50, 50), image.Rect(20, 20, 30, 30), 1, LabelDet1)
+	det1_1 := objdet.NewDetection(image.Rect(0, 0, 50, 50), image.Rect(22, 22, 33, 33), 1, LabelDet1)
 	detsT0 := []objdet.Detection{det0, det1}
 	detsT1 := []objdet.Detection{det0}
 	detsT2 := []objdet.Detection{det1_1}
@@ -142,9 +142,10 @@ func TestGetProperties(t *testing.T) {
 */
 
 func TestTracker(t *testing.T) {
-	det0 := objdet.NewDetection(image.Rect(0, 0, 10, 10), 1, LabelDet0)
-	det1 := objdet.NewDetection(image.Rect(20, 20, 30, 30), 1, LabelDet1)
-	det1_1 := objdet.NewDetection(image.Rect(22, 22, 33, 33), 1, LabelDet1)
+	bounds := image.Rect(0, 0, 50, 50)
+	det0 := objdet.NewDetection(bounds, image.Rect(0, 0, 10, 10), 1, LabelDet0)
+	det1 := objdet.NewDetection(bounds, image.Rect(20, 20, 30, 30), 1, LabelDet1)
+	det1_1 := objdet.NewDetection(bounds, image.Rect(22, 22, 33, 33), 1, LabelDet1)
 	detsT0 := []objdet.Detection{det0, det1}
 	detsT1 := []objdet.Detection{det0}
 	detsT2 := []objdet.Detection{det1_1}
@@ -384,4 +385,36 @@ func TestInvalidCameraNamesError(t *testing.T) {
 	// Test empty (valid) camera name in CaptureAllFromCamera
 	_, err = fakeTracker.CaptureAllFromCamera(ctx, "", viscapture.CaptureOptions{ReturnImage: true}, emptyMap)
 	test.That(t, err, test.ShouldBeNil)
+}
+
+func TestImageBoundsFromDet(t *testing.T) {
+	bounds := image.Rect(0, 0, 50, 50)
+	det := objdet.NewDetection(bounds, image.Rect(0, 0, 10, 10), 1, LabelDet0)
+	imgBounds := ImageBoundsFromDet(det)
+	test.That(t, *imgBounds, test.ShouldResemble, bounds)
+
+	// Test with no bounds
+	det = objdet.NewDetectionWithoutImgBounds(image.Rect(0, 0, 10, 10), 1, LabelDet0)
+	imgBounds = ImageBoundsFromDet(det)
+	test.That(t, imgBounds, test.ShouldEqual, nil)
+}
+
+func TestReplaceLabelsAndBoundingBox(t *testing.T) {
+	bounds := image.Rect(0, 0, 50, 50)
+	det := objdet.NewDetection(bounds, image.Rect(0, 0, 10, 10), 1, LabelDet0)
+	test.That(t, det, test.ShouldNotBeNil)
+	test.That(t, det.Label(), test.ShouldEqual, LabelDet0)
+	tr := &track{
+		Det: det,
+	}
+
+	newLabel := "dog"
+	replacedTrack := ReplaceLabel(tr, newLabel)
+	test.That(t, replacedTrack.Det.Label(), test.ShouldEqual, newLabel)
+	test.That(t, replacedTrack.Det.NormalizedBoundingBox(), test.ShouldNotBeNil)
+
+	newBB := image.Rect(20, 20, 30, 30)
+	replacedTrack = ReplaceBoundingBox(tr, &newBB)
+	test.That(t, replacedTrack.Det.BoundingBox(), test.ShouldResemble, &newBB)
+	test.That(t, replacedTrack.Det.NormalizedBoundingBox(), test.ShouldNotBeNil)
 }

@@ -21,7 +21,13 @@ func GetTimestamp() string {
 
 // ReplaceLabel replaces the detection with an almost identical detection (new label)
 func ReplaceLabel(tr *track, label string) *track {
-	det := objdet.NewDetection(*tr.Det.BoundingBox(), tr.Det.Score(), label)
+	imageBounds := ImageBoundsFromDet(tr.Det)
+	var det objdet.Detection
+	if imageBounds == nil {
+		det = objdet.NewDetectionWithoutImgBounds(*tr.Det.BoundingBox(), tr.Det.Score(), label)
+	} else {
+		det = objdet.NewDetection(*imageBounds, *tr.Det.BoundingBox(), tr.Det.Score(), label)
+	}
 	newTrack := tr.clone()
 	newTrack.Det = det
 	return newTrack
@@ -29,7 +35,13 @@ func ReplaceLabel(tr *track, label string) *track {
 
 // ReplaceBoundingBox replaces the detection with an almost identical detection (new bounding box)
 func ReplaceBoundingBox(tr *track, bb *image.Rectangle) *track {
-	det := objdet.NewDetection(*bb, tr.Det.Score(), tr.Det.Label())
+	imageBounds := ImageBoundsFromDet(tr.Det)
+	var det objdet.Detection
+	if imageBounds == nil {
+		det = objdet.NewDetectionWithoutImgBounds(*bb, tr.Det.Score(), tr.Det.Label())
+	} else {
+		det = objdet.NewDetection(*imageBounds, *bb, tr.Det.Score(), tr.Det.Label())
+	}
 	newTrack := tr.clone()
 	newTrack.Det = det
 	return newTrack
@@ -112,4 +124,26 @@ func (t *myTracker) UpdateTrack(nextTrack, oldMatchedTrack *track) (*track, bool
 	isNowStable := newTrack.isStable()
 	newlyStable := wasStable != isNowStable
 	return newTrack, newlyStable
+}
+
+// ImageBoundsFromDet returns the image bounds from the detection.
+// Assumptions: image bounds do not change between frames and start at (0,0)
+func ImageBoundsFromDet(det objdet.Detection) *image.Rectangle {
+	if det.NormalizedBoundingBox() == nil {
+		return nil
+	}
+
+	normalizedXMax := det.NormalizedBoundingBox()[2]
+	normalizedYMax := det.NormalizedBoundingBox()[3]
+
+	boundsXMax := det.BoundingBox().Max.X
+	boundsYMax := det.BoundingBox().Max.Y
+
+	imgBounds := image.Rect(
+		0, 0,
+		int(float64(boundsXMax) / normalizedXMax),
+		int(float64(boundsYMax) / normalizedYMax),
+	)
+
+	return &imgBounds
 }

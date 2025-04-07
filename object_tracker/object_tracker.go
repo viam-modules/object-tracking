@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"go.viam.com/rdk/gostream"
 	"go.viam.com/rdk/vision/viscapture"
 
 	"image"
@@ -128,12 +127,8 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 
 	// Do the first pass to populate the first set of 2 detections.
 	starterDets := make([][]*track, 2)
-	stream, err := t.cam.Stream(t.cancelContext, nil)
-	if err != nil {
-		return nil, err
-	}
 	for i := 0; i < 2; i++ {
-		img, _, err := stream.Next(t.cancelContext)
+		img, err := camera.DecodeImageFromCamera(cancelableCtx, "", nil, t.cam)
 		if err != nil {
 			return nil, err
 		}
@@ -184,10 +179,9 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 
 	t.activeBackgroundWorkers.Add(1)
 	viamutils.ManagedGo(func() {
-		t.run(stream, t.cancelContext)
+		t.run(t.cam, t.cancelContext)
 	}, func() {
 		t.cancelFunc()
-		stream.Close(t.cancelContext)
 		t.activeBackgroundWorkers.Done()
 	})
 
@@ -196,7 +190,7 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 
 // run is a (cancelable) infinite loop that takes new detections from the camera and compares them to
 // the most recently seen detections. Matching detections are linked via matching labels.
-func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Context) {
+func (t *myTracker) run(myCam camera.Camera, cancelableCtx context.Context) {
 	for {
 		select {
 		case <-cancelableCtx.Done():
@@ -204,7 +198,7 @@ func (t *myTracker) run(stream gostream.VideoStream, cancelableCtx context.Conte
 		default:
 			start := time.Now()
 			// Take fresh detections from fresh image
-			img, _, err := stream.Next(cancelableCtx)
+			img, err := camera.DecodeImageFromCamera(cancelableCtx, "", nil, t.cam)
 			if err != nil {
 				t.logger.Errorf("can't get image. got err: %s", err)
 				continue
