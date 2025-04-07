@@ -179,7 +179,7 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 
 	t.activeBackgroundWorkers.Add(1)
 	viamutils.ManagedGo(func() {
-		t.run(t.cam, t.cancelContext)
+		t.run(t.cancelContext)
 	}, func() {
 		t.cancelFunc()
 		t.activeBackgroundWorkers.Done()
@@ -190,7 +190,7 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 
 // run is a (cancelable) infinite loop that takes new detections from the camera and compares them to
 // the most recently seen detections. Matching detections are linked via matching labels.
-func (t *myTracker) run(myCam camera.Camera, cancelableCtx context.Context) {
+func (t *myTracker) run(cancelableCtx context.Context) {
 	for {
 		select {
 		case <-cancelableCtx.Done():
