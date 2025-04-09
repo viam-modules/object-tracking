@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.viam.com/rdk/utils"
 	"go.viam.com/rdk/vision/viscapture"
 
 	"image"
@@ -127,8 +128,8 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 
 	// Do the first pass to populate the first set of 2 detections.
 	starterDets := make([][]*track, 2)
-	for i := 0; i < 2; i++ {
-		img, err := camera.DecodeImageFromCamera(cancelableCtx, "", nil, t.cam)
+	for i := range 2 {
+		img, err := camera.DecodeImageFromCamera(cancelableCtx, utils.MimeTypeJPEG, nil, t.cam)
 		if err != nil {
 			return nil, err
 		}

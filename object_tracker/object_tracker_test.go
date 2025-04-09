@@ -404,17 +404,15 @@ func TestReplaceLabelsAndBoundingBox(t *testing.T) {
 	det := objdet.NewDetection(bounds, image.Rect(0, 0, 10, 10), 1, LabelDet0)
 	test.That(t, det, test.ShouldNotBeNil)
 	test.That(t, det.Label(), test.ShouldEqual, LabelDet0)
-	tr := &track{
-		Det: det,
-	}
+	tr := newTrack(det, 50)
 
 	newLabel := "dog"
 	replacedTrack := ReplaceLabel(tr, newLabel)
 	test.That(t, replacedTrack.Det.Label(), test.ShouldEqual, newLabel)
-	test.That(t, replacedTrack.Det.NormalizedBoundingBox(), test.ShouldNotBeNil)
+	test.That(t, replacedTrack.Det.NormalizedBoundingBox(), test.ShouldResemble, []float64{0, 0, 0.2, 0.2})
 
 	newBB := image.Rect(20, 20, 30, 30)
 	replacedTrack = ReplaceBoundingBox(tr, &newBB)
 	test.That(t, replacedTrack.Det.BoundingBox(), test.ShouldResemble, &newBB)
-	test.That(t, replacedTrack.Det.NormalizedBoundingBox(), test.ShouldNotBeNil)
+	test.That(t, replacedTrack.Det.NormalizedBoundingBox(), test.ShouldResemble, []float64{0.4, 0.4, 0.6, 0.6})
 }

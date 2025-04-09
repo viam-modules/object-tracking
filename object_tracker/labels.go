@@ -129,7 +129,7 @@ func (t *myTracker) UpdateTrack(nextTrack, oldMatchedTrack *track) (*track, bool
 // ImageBoundsFromDet returns the image bounds from the detection.
 // Assumptions: image bounds do not change between frames and start at (0,0)
 func ImageBoundsFromDet(det objdet.Detection) *image.Rectangle {
-	if det.NormalizedBoundingBox() == nil {
+	if len(det.NormalizedBoundingBox()) != 4 {
 		return nil
 	}
 
