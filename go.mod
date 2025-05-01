@@ -2,8 +2,6 @@ module github.com/viam-modules/object-tracking
 
 go 1.24.2
 
-toolchain go1.24.2
-
 require (
 	github.com/charles-haynes/munkres v0.0.0-20191008174651-55d467190535
 	github.com/pkg/errors v0.9.1
@@ -44,7 +42,6 @@ require (
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/edaniels/golog v0.0.0-20230215213219-28954395e8d0 // indirect
 	github.com/edaniels/lidario v0.0.0-20220607182921-5879aa7b96dd // indirect
-	github.com/edaniels/zeroconf v1.0.10 // indirect
 	github.com/erikstmartin/go-testdb v0.0.0-20160219214506-8d10e4a1bae5 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fogleman/gg v1.3.0 // indirect
