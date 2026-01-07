@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"go.viam.com/rdk/components/camera"
+	"go.viam.com/rdk/data"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/resource"
 	"go.viam.com/rdk/rimage"
@@ -57,7 +58,7 @@ func getTracker() (vision.Service, error) { //nolint:unused
 		res: [][]objdet.Detection{detsT0, detsT1, detsT2, detsT3},
 	}
 	cam := &inject.Camera{
-		ImageFunc: func(ctx context.Context, mimeType string, extra map[string]interface{}) ([]byte, camera.ImageMetadata, error) {
+		ImagesFunc: func(ctx context.Context, filterSourceNames []string, extra map[string]interface{}) ([]camera.NamedImage, resource.ResponseMetadata, error) {
 			img, err := rimage.NewImageFromFile("./test_files/dogscute.jpeg")
 			if err != nil {
 				fmt.Println(err)
@@ -68,7 +69,12 @@ func getTracker() (vision.Service, error) { //nolint:unused
 				fmt.Println(err)
 				panic(err)
 			}
-			return imgBytes, camera.ImageMetadata{MimeType: utils.MimeTypeJPEG}, nil
+			namedImage, err := camera.NamedImageFromBytes(imgBytes, "color", utils.MimeTypeJPEG, data.Annotations{})
+			if err != nil {
+				fmt.Println(err)
+				panic(err)
+			}
+			return []camera.NamedImage{namedImage}, resource.ResponseMetadata{}, nil
 		},
 	}
 	detector := &inject.VisionService{
@@ -102,19 +108,19 @@ func getTracker() (vision.Service, error) { //nolint:unused
 func TestValidate(t *testing.T) {
 	// empty cfg
 	emptyCfg := Config{}
-	emptyDeps, err := emptyCfg.Validate("")
+	emptyDeps, _, err := emptyCfg.Validate("")
 	test.That(t, err, test.ShouldNotBeNil)
 	test.That(t, emptyDeps, test.ShouldBeNil)
 
 	// good cfg
 	goodCfg := Config{CameraName: "camera", DetectorName: "detector"}
-	goodDeps, err := goodCfg.Validate("")
+	goodDeps, _, err := goodCfg.Validate("")
 	test.That(t, err, test.ShouldBeNil)
 	test.That(t, goodDeps, test.ShouldNotBeNil)
 
 	// bad cfg
 	badCfg := Config{CameraName: "camera"}
-	badDeps, err := badCfg.Validate("")
+	badDeps, _, err := badCfg.Validate("")
 	test.That(t, err, test.ShouldNotBeNil)
 	test.That(t, badDeps, test.ShouldBeNil)
 	test.That(t, err.Error(), test.ShouldContainSubstring, "detector_name")
