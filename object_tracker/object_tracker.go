@@ -11,8 +11,6 @@ import (
 
 	"go.viam.com/rdk/vision/viscapture"
 
-	"image"
-
 	hg "github.com/charles-haynes/munkres"
 	"github.com/pkg/errors"
 	"go.viam.com/rdk/components/camera"
@@ -70,7 +68,7 @@ type myTracker struct {
 	activeBackgroundWorkers sync.WaitGroup
 	lastDetections          []*track
 	currDetections          currentDetections
-	currImg                 atomic.Pointer[image.Image]
+	currImg                 atomic.Pointer[camera.NamedImage]
 	lostDetectionsBuffer    *tracksBuffer
 
 	allFreshObjects allObjects
@@ -128,7 +126,7 @@ func newTracker(ctx context.Context, deps resource.Dependencies, conf resource.C
 	// Do the first pass to populate the first set of 2 detections.
 	starterDets := make([][]*track, 2)
 	for i := range 2 {
-		img, err := camera.DecodeImageFromCamera(cancelableCtx, t.cam, nil, nil)
+		img, err := getNamedImageFromCamera(cancelableCtx, t.cam)
 		if err != nil {
 			return nil, err
 		}
@@ -198,7 +196,7 @@ func (t *myTracker) run(cancelableCtx context.Context) {
 		default:
 			start := time.Now()
 			// Take fresh detections from fresh image
-			img, err := camera.DecodeImageFromCamera(cancelableCtx, t.cam, nil, nil)
+			img, err := getNamedImageFromCamera(cancelableCtx, t.cam)
 			if err != nil {
 				t.logger.Errorf("can't get image. got err: %s", err)
 				continue
@@ -264,7 +262,7 @@ func (t *myTracker) run(cancelableCtx context.Context) {
 			t.currDetections.mutex.Lock()
 			t.currDetections.detections = renamedNew
 			t.currDetections.mutex.Unlock()
-			t.currImg.Store(&img)
+			t.currImg.Store(img)
 
 			took := time.Since(start)
 			t.timeStats = append(t.timeStats, took)
@@ -423,7 +421,7 @@ func (t *myTracker) DetectionsFromCamera(
 	}
 }
 
-func (t *myTracker) Detections(ctx context.Context, img image.Image, extra map[string]interface{}) ([]objdet.Detection, error) {
+func (t *myTracker) Detections(ctx context.Context, img *camera.NamedImage, extra map[string]interface{}) ([]objdet.Detection, error) {
 	select {
 	case <-t.cancelContext.Done():
 		return nil, t.cancelContext.Err()
@@ -453,7 +451,7 @@ func (t *myTracker) ClassificationsFromCamera(
 	}
 }
 
-func (t *myTracker) Classifications(ctx context.Context, img image.Image,
+func (t *myTracker) Classifications(ctx context.Context, img *camera.NamedImage,
 	n int, extra map[string]interface{},
 ) (classification.Classifications, error) {
 	if newInstance := t.newInstance.Load(); newInstance {
@@ -482,7 +480,7 @@ func (t *myTracker) CaptureAllFromCamera(
 ) (viscapture.VisCapture, error) {
 	var detections []objdet.Detection
 	var classifications []classification.Classification
-	var img image.Image
+	var img *camera.NamedImage
 	select {
 	case <-t.cancelContext.Done():
 		return viscapture.VisCapture{}, t.cancelContext.Err()
@@ -493,7 +491,7 @@ func (t *myTracker) CaptureAllFromCamera(
 			if cameraName != "" && cameraName != t.camName {
 				return viscapture.VisCapture{}, errors.Errorf("Camera name given to method, %v is not the same as configured camera %v", cameraName, t.camName)
 			}
-			img = *t.currImg.Load()
+			img = t.currImg.Load()
 		}
 		if opt.ReturnDetections {
 			t.currDetections.mutex.RLock()
@@ -555,6 +553,17 @@ func (t *myTracker) DoCommand(ctx context.Context, cmd map[string]interface{}) (
 		t.allFreshObjects.mutex.RUnlock()
 	}
 	return out, nil
+}
+
+func getNamedImageFromCamera(ctx context.Context, cam camera.Camera) (*camera.NamedImage, error) {
+	images, _, err := cam.Images(ctx, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(images) == 0 {
+		return nil, errors.New("camera returned no images")
+	}
+	return &images[0], nil
 }
 
 type tracksBuffer struct {

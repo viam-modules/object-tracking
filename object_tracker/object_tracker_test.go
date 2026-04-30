@@ -78,7 +78,7 @@ func getTracker() (vision.Service, error) { //nolint:unused
 		},
 	}
 	detector := &inject.VisionService{
-		DetectionsFunc: func(ctx context.Context, img image.Image, extra map[string]interface{}) ([]objdet.Detection, error) {
+		DetectionsFunc: func(ctx context.Context, img *camera.NamedImage, extra map[string]interface{}) ([]objdet.Detection, error) {
 			return fd.fakeDetections(), nil
 		},
 	}
@@ -351,22 +351,23 @@ func TestTracker(t *testing.T) {
 
 func TestInvalidCameraNamesError(t *testing.T) {
 	ctx := context.Background()
-	var img image.Image
 	rect := image.Rect(0, 0, 10, 10)
-	img = rimage.NewImageFromBounds(rect)
+	rawImg := rimage.NewImageFromBounds(rect)
+	namedImg, err := camera.NamedImageFromImage(rawImg, "color", utils.MimeTypeJPEG, data.Annotations{})
+	test.That(t, err, test.ShouldBeNil)
 
 	fakeTracker := &myTracker{
 		camName:       "test",
 		cancelContext: ctx,
 	}
-	fakeTracker.currImg.Store(&img)
+	fakeTracker.currImg.Store(&namedImg)
 
 	invalidName := "not-camera"
 	invalidNameErrorMessage := "Camera name given to method, not-camera is not the same as configured camera test"
 	emptyMap := make(map[string]interface{})
 
 	// Test invalid camera name in DetectionsFromCamera
-	_, err := fakeTracker.DetectionsFromCamera(ctx, invalidName, emptyMap)
+	_, err = fakeTracker.DetectionsFromCamera(ctx, invalidName, emptyMap)
 	test.That(t, err, test.ShouldNotBeNil)
 	test.That(t, err.Error(), test.ShouldContainSubstring, invalidNameErrorMessage)
 
